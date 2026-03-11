@@ -24,6 +24,9 @@ rke2-patcher image-list <component> [--with-cves] [--verbose]
 rke2-patcher image-patch <component> [--dry-run] [--revert]
 ```
 
+- `--version` always prints the CLI version and also tries to print the connected cluster version (`gitVersion`) from Kubernetes API `/version`.
+- If Kubernetes access is not available, `--version` still succeeds and reports cluster version as unavailable.
+
 Make targets:
 
 ```bash
@@ -120,7 +123,7 @@ rke2-patcher image-patch traefik --revert
 
 ## Requirements
 
-- Kubernetes API access for `image-cve` and `image-patch`, using one of:
+- Kubernetes API access for `image-cve`, `image-patch`, and cluster-version detection in `--version`, using one of:
   - In-cluster service account files:
     - `/var/run/secrets/kubernetes.io/serviceaccount/token`
     - `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`

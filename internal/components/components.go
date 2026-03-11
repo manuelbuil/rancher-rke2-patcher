@@ -144,6 +144,7 @@ var registry = map[string]Component{
 	},
 }
 
+// Resolves the component struct of the chosen component
 func Resolve(name string) (Component, error) {
 	key := strings.ToLower(strings.TrimSpace(name))
 	component, found := registry[key]

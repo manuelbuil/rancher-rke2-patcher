@@ -14,7 +14,7 @@ import (
 	"github.com/manuelbuil/PoCs/2026/rke2-patcher/internal/patcher"
 )
 
-const version = "0.2.5"
+const version = "0.2.6"
 
 type imageListOptions struct {
 	WithCVEs bool
@@ -94,6 +94,7 @@ func main() {
 	}
 }
 
+// parseImageCVEOptions parses and validates the scanner mode option
 func parseImageCVEOptions(args []string) (string, error) {
 	if len(args) == 0 {
 		return "", nil
@@ -623,6 +624,7 @@ func truncateText(value string, maxLength int) string {
 	return value[:maxLength-3] + "..."
 }
 
+// printUsage prints a help menu describing how the tool must be used
 func printUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  rke2-patcher --version")
@@ -633,6 +635,15 @@ func printUsage() {
 	fmt.Printf("Supported components: %s\n", strings.Join(components.Supported(), ", "))
 }
 
+// printVersion prints the version of the tool and the version of the RKE2 cluster
 func printVersion() {
 	fmt.Printf("rke2-patcher %s\n", version)
+
+	clusterVersion, err := kube.ClusterVersion()
+	if err != nil {
+		fmt.Printf("cluster version: unavailable (%v)\n", err)
+		return
+	}
+
+	fmt.Printf("cluster version: %s\n", clusterVersion)
 }
