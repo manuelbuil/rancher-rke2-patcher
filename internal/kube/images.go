@@ -42,7 +42,7 @@ type workloadGetResponse struct {
 	} `json:"spec"`
 }
 
-func ListRunningImagesByRepository(componentRepository string) ([]PodImageSummary, error) {
+func ListRunningImages(workload components.WorkloadRef, componentRepository string) ([]PodImageSummary, error) {
 	trimmedRepo := strings.TrimSpace(componentRepository)
 	if trimmedRepo == "" {
 		return nil, fmt.Errorf("component repository cannot be empty")
@@ -54,9 +54,28 @@ func ListRunningImagesByRepository(componentRepository string) ([]PodImageSummar
 	}
 
 	counts := make(map[string]int)
+
+	namespace := strings.TrimSpace(workload.Namespace)
+	if namespace == "" {
+		namespace = "kube-system"
+	}
+
+	kind := strings.ToLower(strings.TrimSpace(workload.Kind))
+	name := strings.TrimSpace(workload.Name)
+	if kind == "" || name == "" {
+		return nil, fmt.Errorf("invalid workload reference configured")
+	}
+
+	checked := fmt.Sprintf("%s/%s/%s", kind, namespace, name)
+
+	selector, selectorErr := workloadSelector(api, kind, namespace, name)
+	if selectorErr != nil {
+		return nil, selectorErr
+	}
+
 	continueToken := ""
 	for {
-		list, listErr := listPodsPage(api, continueToken)
+		list, listErr := listPodsByNamespaceAndSelectorPage(api, namespace, selector, continueToken)
 		if listErr != nil {
 			return nil, listErr
 		}
@@ -86,7 +105,7 @@ func ListRunningImagesByRepository(componentRepository string) ([]PodImageSummar
 	}
 
 	if len(counts) == 0 {
-		return nil, fmt.Errorf("no running image found in cluster for repository %q", componentRepository)
+		return nil, fmt.Errorf("no running image found in configured workload for repository %q (checked: %s)", componentRepository, checked)
 	}
 
 	images := make([]PodImageSummary, 0, len(counts))
@@ -105,139 +124,36 @@ func ListRunningImagesByRepository(componentRepository string) ([]PodImageSummar
 	return images, nil
 }
 
-func ListRunningImagesForWorkloadsByRepository(workloads []components.WorkloadRef, componentRepository string) ([]PodImageSummary, error) {
-	trimmedRepo := strings.TrimSpace(componentRepository)
-	if trimmedRepo == "" {
-		return nil, fmt.Errorf("component repository cannot be empty")
-	}
-
-	if len(workloads) == 0 {
-		return nil, fmt.Errorf("component workloads cannot be empty")
-	}
-
-	api, err := kubeAPIClient()
-	if err != nil {
-		return nil, err
-	}
-
-	counts := make(map[string]int)
-	checked := make([]string, 0, len(workloads))
-
-	for _, workload := range workloads {
-		namespace := strings.TrimSpace(workload.Namespace)
-		if namespace == "" {
-			namespace = "kube-system"
-		}
-
-		kind := strings.ToLower(strings.TrimSpace(workload.Kind))
-		name := strings.TrimSpace(workload.Name)
-		if kind == "" || name == "" {
-			continue
-		}
-
-		checked = append(checked, fmt.Sprintf("%s/%s/%s", kind, namespace, name))
-
-		selector, selectorErr := workloadSelector(api, kind, namespace, name)
-		if selectorErr != nil {
-			return nil, selectorErr
-		}
-
-		continueToken := ""
-		for {
-			list, listErr := listPodsByNamespaceAndSelectorPage(api, namespace, selector, continueToken)
-			if listErr != nil {
-				return nil, listErr
-			}
-
-			for _, item := range list.Items {
-				if item.Status.Phase != "Running" {
-					continue
-				}
-
-				for _, container := range item.Spec.InitContainers {
-					if imageBelongsToRepository(container.Image, trimmedRepo) {
-						counts[container.Image]++
-					}
-				}
-
-				for _, container := range item.Spec.Containers {
-					if imageBelongsToRepository(container.Image, trimmedRepo) {
-						counts[container.Image]++
-					}
-				}
-			}
-
-			if strings.TrimSpace(list.Continue) == "" {
-				break
-			}
-			continueToken = list.Continue
-		}
-	}
-
-	if len(counts) == 0 {
-		if len(checked) == 0 {
-			return nil, fmt.Errorf("no valid workload references configured")
-		}
-
-		return nil, fmt.Errorf("no running image found in configured workloads for repository %q (checked: %s)", componentRepository, strings.Join(checked, ", "))
-	}
-
-	images := make([]PodImageSummary, 0, len(counts))
-	for image, count := range counts {
-		images = append(images, PodImageSummary{Image: image, Count: count})
-	}
-
-	sort.Slice(images, func(i int, j int) bool {
-		if images[i].Count == images[j].Count {
-			return images[i].Image < images[j].Image
-		}
-
-		return images[i].Count > images[j].Count
-	})
-
-	return images, nil
-}
-
-// EnsureAnyWorkloadExists queries kube-api to check if at least one of the provided workloads exist
-func EnsureAnyWorkloadExists(workloads []components.WorkloadRef) error {
-	if len(workloads) == 0 {
-		return nil
-	}
-
+// EnsureWorkloadExists queries kube-api to check if the provided workload exists
+func EnsureWorkloadExists(workload components.WorkloadRef) error {
 	api, err := kubeAPIClient()
 	if err != nil {
 		return err
 	}
 
-	var checked []string
-	for _, workload := range workloads {
-		namespace := strings.TrimSpace(workload.Namespace)
-		if namespace == "" {
-			namespace = "kube-system"
-		}
-
-		kind := strings.ToLower(strings.TrimSpace(workload.Kind))
-		name := strings.TrimSpace(workload.Name)
-		if kind == "" || name == "" {
-			continue
-		}
-
-		exists, checkErr := workloadExists(api, kind, namespace, name)
-		checked = append(checked, fmt.Sprintf("%s/%s/%s", kind, namespace, name))
-		if checkErr != nil {
-			return checkErr
-		}
-
-		if exists {
-			return nil
-		}
+	namespace := strings.TrimSpace(workload.Namespace)
+	if namespace == "" {
+		namespace = "kube-system"
 	}
 
-	if len(checked) == 0 {
-		return fmt.Errorf("no valid workload references configured")
+	kind := strings.ToLower(strings.TrimSpace(workload.Kind))
+	name := strings.TrimSpace(workload.Name)
+	if kind == "" || name == "" {
+		return fmt.Errorf("invalid workload reference configured")
 	}
 
-	return fmt.Errorf("component workload not found in cluster (checked: %s)", strings.Join(checked, ", "))
+	exists, checkErr := workloadExists(api, kind, namespace, name)
+	if checkErr != nil {
+		return checkErr
+	}
+
+	if exists {
+		return nil
+	}
+
+	checked := fmt.Sprintf("%s/%s/%s", kind, namespace, name)
+
+	return fmt.Errorf("component workload not found in cluster (checked: %s)", checked)
 }
 
 func listPodsPage(api kubeAPI, continueToken string) (podList, error) {
@@ -437,11 +353,11 @@ func imageNameWithoutTagOrDigest(image string) string {
 	return trimmed
 }
 
-//SplitImage splits an image reference into the image name and the tag or digest. 
-//For example, "rancher/hardened-flannel:v0.1.0" would return "rancher/hardened-flannel" and
-//"v0.1.0", while "rancher/hardened-flannel@sha256:abc123" would return
-//"rancher/hardened-flannel" and "sha256:abc123". If no tag or digest is present, 
-//the second return value defaults to "latest"
+// SplitImage splits an image reference into the image name and the tag or digest.
+// For example, "rancher/hardened-flannel:v0.1.0" would return "rancher/hardened-flannel" and
+// "v0.1.0", while "rancher/hardened-flannel@sha256:abc123" would return
+// "rancher/hardened-flannel" and "sha256:abc123". If no tag or digest is present,
+// the second return value defaults to "latest"
 func SplitImage(image string) (string, string) {
 	trimmed := strings.TrimSpace(image)
 	if idx := strings.Index(trimmed, "@"); idx >= 0 {

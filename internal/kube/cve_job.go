@@ -19,7 +19,7 @@ const (
 	cveScannerImageEnv   = "RKE2_PATCHER_CVE_SCANNER_IMAGE"
 	cveJobTimeoutEnv     = "RKE2_PATCHER_CVE_JOB_TIMEOUT"
 	defaultCVENamespace  = "rke2-patcher"
-	defaultCVEScanImage  = "aquasec/trivy:latest"
+	defaultCVEScanImage  = "aquasec/trivy:0.69.3"
 	defaultCVEJobTimeout = 8 * time.Minute
 )
 

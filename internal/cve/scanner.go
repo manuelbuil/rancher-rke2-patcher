@@ -34,12 +34,56 @@ type Result struct {
 	CVEs []string
 }
 
+var (
+	scanImagesWithTrivyJob = kube.ScanImagesWithTrivyJob
+	listForImageWithMode   = ListForImageWithMode
+)
+
 func ListForImage(image string) (Result, error) {
 	return ListForImageWithMode(image, "")
 }
 
 func ResolveScanMode(modeOverride string) (string, error) {
 	return resolveScanMode(modeOverride)
+}
+
+func ListForImagesWithMode(images []string, modeOverride string) (map[string]Result, map[string]error, error) {
+	mode, err := resolveScanMode(modeOverride)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	targetImages := make([]string, 0, len(images))
+	for _, image := range images {
+		trimmed := strings.TrimSpace(image)
+		if trimmed == "" {
+			continue
+		}
+		targetImages = append(targetImages, trimmed)
+	}
+
+	if len(targetImages) == 0 {
+		return map[string]Result{}, map[string]error{}, nil
+	}
+
+	if mode == "local" {
+		results := make(map[string]Result)
+		errorsByImage := make(map[string]error)
+
+		for _, image := range targetImages {
+			result, scanErr := listForImageWithMode(image, "local")
+			if scanErr != nil {
+				errorsByImage[image] = scanErr
+				continue
+			}
+
+			results[image] = result
+		}
+
+		return results, errorsByImage, nil
+	}
+
+	return listForImagesInCluster(targetImages)
 }
 
 func ListForImagesInCluster(images []string) (map[string]Result, map[string]error, error) {
@@ -56,7 +100,11 @@ func ListForImagesInCluster(images []string) (map[string]Result, map[string]erro
 		return map[string]Result{}, map[string]error{}, nil
 	}
 
-	output, err := kube.ScanImagesWithTrivyJob(targetImages, true)
+	return listForImagesInCluster(targetImages)
+}
+
+func listForImagesInCluster(targetImages []string) (map[string]Result, map[string]error, error) {
+	output, err := scanImagesWithTrivyJob(targetImages, true)
 	if err != nil {
 		return nil, nil, fmt.Errorf("cluster scanner failed: %w", err)
 	}
@@ -230,7 +278,7 @@ func ensureLocalTrivyVEXFile() (string, error) {
 		return "", fmt.Errorf("failed to resolve user home directory for trivy vex configuration: %w", err)
 	}
 
-	vexDirectory := filepath.Join(homeDirectory, ".trivy", "vex")
+	vexDirectory := filepath.Join(homeDirectory, "rke2-patcher-cache", "vex")
 	if mkdirErr := os.MkdirAll(vexDirectory, 0o755); mkdirErr != nil {
 		return "", fmt.Errorf("failed to create trivy vex directory %q: %w", vexDirectory, mkdirErr)
 	}

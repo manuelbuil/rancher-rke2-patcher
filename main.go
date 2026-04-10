@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	version                = "0.5.1"
+	version                = "0.6.3"
 	defaultRKE2DataDir     = "/var/lib/rancher/rke2"
 	patchLimitCacheDirEnv  = "RKE2_PATCHER_CACHE_DIR"
 	patchLimitStateSubPath = "server/rke2-patcher-cache/patch-limit-state.json"
@@ -182,13 +182,14 @@ func parseImageListOptions(args []string) (imageListOptions, error) {
 	return options, nil
 }
 
+// runCVE lists CVEs for the image of the component
 func runCVE(component components.Component) error {
 	scannerMode := ""
-	if err := kube.EnsureAnyWorkloadExists(component.Workloads); err != nil {
+	if err := kube.EnsureWorkloadExists(component.Workload); err != nil {
 		return err
 	}
 
-	runningImages, err := listRunningImagesForComponent(component)
+	runningImages, err := kube.ListRunningImages(component.Workload, component.Repository)
 	if err != nil {
 		return err
 	}
@@ -224,7 +225,7 @@ func runCVE(component components.Component) error {
 }
 
 func runImageList(component components.Component, options imageListOptions) error {
-	runningImages, err := listRunningImagesForComponent(component)
+	runningImages, err := kube.ListRunningImages(component.Workload, component.Repository)
 	if err != nil {
 		return fmt.Errorf("running image unavailable: %w", err)
 	}
@@ -251,7 +252,7 @@ func runImageList(component components.Component, options imageListOptions) erro
 			targetImages = append(targetImages, fmt.Sprintf("%s:%s", currentImageName, tagName))
 		}
 
-		resultsByImage, errorsByImage, scanErr := cve.ListForImagesInCluster(targetImages)
+		resultsByImage, errorsByImage, scanErr := cve.ListForImagesWithMode(targetImages, "")
 		if scanErr != nil {
 			return scanErr
 		}
@@ -339,11 +340,11 @@ func runImageList(component components.Component, options imageListOptions) erro
 }
 
 func runImagePatch(component components.Component, options imagePatchOptions) error {
-	if err := kube.EnsureAnyWorkloadExists(component.Workloads); err != nil {
+	if err := kube.EnsureWorkloadExists(component.Workload); err != nil {
 		return err
 	}
 
-	runningImages, err := listRunningImagesForComponent(component)
+	runningImages, err := kube.ListRunningImages(component.Workload, component.Repository)
 	if err != nil {
 		return err
 	}
@@ -455,13 +456,9 @@ func runImagePatch(component components.Component, options imagePatchOptions) er
 }
 
 func evaluatePatchLimit(componentName string, currentTag string, targetTag string, revert bool) (patchLimitDecision, error) {
-	if revert {
-		return patchLimitDecision{}, nil
-	}
-
 	clusterVersion, err := clusterVersionResolver()
 	if err != nil {
-		return patchLimitDecision{}, fmt.Errorf("failed to resolve cluster version for patch-limit check: %w", err)
+		return patchLimitDecision{}, fmt.Errorf("failed to resolve cluster version for patch-limit/revert check: %w", err)
 	}
 
 	stateFilePath := patchLimitStateFilePath()
@@ -471,6 +468,29 @@ func evaluatePatchLimit(componentName string, currentTag string, targetTag strin
 	}
 
 	entryKey := patchLimitEntryKey(clusterVersion, componentName)
+	if revert {
+		existing, found := state.Entries[entryKey]
+		if !found {
+			return patchLimitDecision{}, fmt.Errorf("refusing to revert: component %q has no recorded baseline for RKE2 %s; reverting below the release baseline is not supported", componentName, clusterVersion)
+		}
+
+		baselineTag := strings.TrimSpace(existing.BaselineTag)
+		if baselineTag == "" {
+			return patchLimitDecision{}, fmt.Errorf("refusing to revert: baseline tag is missing for component %q on RKE2 %s", componentName, clusterVersion)
+		}
+
+		targetOlderThanBaseline, compareErr := isTagOlderThan(targetTag, baselineTag)
+		if compareErr != nil {
+			return patchLimitDecision{}, fmt.Errorf("refusing to revert: failed to compare target tag %q with baseline %q: %w", targetTag, baselineTag, compareErr)
+		}
+
+		if targetOlderThanBaseline {
+			return patchLimitDecision{}, fmt.Errorf("refusing to revert: target tag %q is older than the release baseline %q for component %q on RKE2 %s", targetTag, baselineTag, componentName, clusterVersion)
+		}
+
+		return patchLimitDecision{}, nil
+	}
+
 	if existing, found := state.Entries[entryKey]; found {
 		return patchLimitDecision{}, fmt.Errorf("refusing to patch: component %q was already patched once for RKE2 %s (baseline: %q, patched-to: %q); upgrade RKE2 to patch again", componentName, clusterVersion, existing.BaselineTag, existing.PatchedToTag)
 	}
@@ -693,12 +713,70 @@ func isNewerMinorRelease(current comparableTag, target comparableTag) bool {
 	return target.Minor > current.Minor
 }
 
-func listRunningImagesForComponent(component components.Component) ([]kube.PodImageSummary, error) {
-	if len(component.Workloads) == 0 {
-		return kube.ListRunningImagesByRepository(component.Repository)
+func isTagOlderThan(tagName string, baselineTag string) (bool, error) {
+	tagComparable, tagParseOK := parseComparableTag(tagName)
+	if !tagParseOK {
+		return false, fmt.Errorf("tag %q cannot be compared", tagName)
 	}
 
-	return kube.ListRunningImagesForWorkloadsByRepository(component.Workloads, component.Repository)
+	baselineComparable, baselineParseOK := parseComparableTag(baselineTag)
+	if !baselineParseOK {
+		return false, fmt.Errorf("baseline tag %q cannot be compared", baselineTag)
+	}
+
+	return compareComparableTags(tagComparable, baselineComparable) < 0, nil
+}
+
+func compareComparableTags(left comparableTag, right comparableTag) int {
+	if left.Build != right.Build {
+		if left.Build > right.Build {
+			return 1
+		}
+
+		return -1
+	}
+
+	if left.Major != right.Major {
+		if left.Major > right.Major {
+			return 1
+		}
+
+		return -1
+	}
+
+	if left.Minor != right.Minor {
+		if left.Minor > right.Minor {
+			return 1
+		}
+
+		return -1
+	}
+
+	if left.Patch != right.Patch {
+		if left.Patch > right.Patch {
+			return 1
+		}
+
+		return -1
+	}
+
+	if left.Flavor != right.Flavor {
+		if left.Flavor > right.Flavor {
+			return 1
+		}
+
+		return -1
+	}
+
+	if left.Name != right.Name {
+		if left.Name > right.Name {
+			return 1
+		}
+
+		return -1
+	}
+
+	return 0
 }
 
 func selectTagsForCVEListing(tags []registry.Tag, currentTag string) ([]string, string) {

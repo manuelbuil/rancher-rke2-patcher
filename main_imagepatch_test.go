@@ -319,7 +319,7 @@ func TestEvaluatePatchLimit_AllowsForwardPatchAfterRKE2Upgrade(t *testing.T) {
 	}
 }
 
-func TestEvaluatePatchLimit_RevertDoesNotCreateOrRequireState(t *testing.T) {
+func TestEvaluatePatchLimit_RevertRequiresRecordedBaseline(t *testing.T) {
 	t.Setenv(patchLimitCacheDirEnv, t.TempDir())
 
 	originalClusterVersionResolver := clusterVersionResolver
@@ -331,11 +331,75 @@ func TestEvaluatePatchLimit_RevertDoesNotCreateOrRequireState(t *testing.T) {
 	})
 
 	decision, err := evaluatePatchLimit("rke2-traefik", "v3.6.8-build20260302", "v3.6.7-build20260301", true)
-	if err != nil {
-		t.Fatalf("expected revert evaluation to succeed, got %v", err)
+	if err == nil {
+		t.Fatalf("expected revert evaluation to fail without recorded baseline")
+	}
+
+	if !strings.Contains(err.Error(), "no recorded baseline") {
+		t.Fatalf("expected no-recorded-baseline error, got %q", err.Error())
 	}
 
 	if decision.ShouldPersist {
 		t.Fatalf("expected revert decision to skip persistence")
+	}
+}
+
+func TestEvaluatePatchLimit_RevertAllowsReturningToBaseline(t *testing.T) {
+	t.Setenv(patchLimitCacheDirEnv, t.TempDir())
+
+	originalClusterVersionResolver := clusterVersionResolver
+	clusterVersionResolver = func() (string, error) {
+		return "v1.35.2+rke2r1", nil
+	}
+	t.Cleanup(func() {
+		clusterVersionResolver = originalClusterVersionResolver
+	})
+
+	forwardDecision, err := evaluatePatchLimit("rke2-traefik", "v3.6.7-build20260301", "v3.6.8-build20260302", false)
+	if err != nil {
+		t.Fatalf("unexpected forward patch evaluation error: %v", err)
+	}
+
+	if err := persistPatchLimitDecision(forwardDecision); err != nil {
+		t.Fatalf("unexpected persistence error: %v", err)
+	}
+
+	revertDecision, err := evaluatePatchLimit("rke2-traefik", "v3.6.8-build20260302", "v3.6.7-build20260301", true)
+	if err != nil {
+		t.Fatalf("expected revert to baseline to succeed, got %v", err)
+	}
+
+	if revertDecision.ShouldPersist {
+		t.Fatalf("expected revert decision to skip persistence")
+	}
+}
+
+func TestEvaluatePatchLimit_RevertRejectsTagOlderThanBaseline(t *testing.T) {
+	t.Setenv(patchLimitCacheDirEnv, t.TempDir())
+
+	originalClusterVersionResolver := clusterVersionResolver
+	clusterVersionResolver = func() (string, error) {
+		return "v1.35.2+rke2r1", nil
+	}
+	t.Cleanup(func() {
+		clusterVersionResolver = originalClusterVersionResolver
+	})
+
+	forwardDecision, err := evaluatePatchLimit("rke2-traefik", "v3.6.7-build20260301", "v3.6.8-build20260302", false)
+	if err != nil {
+		t.Fatalf("unexpected forward patch evaluation error: %v", err)
+	}
+
+	if err := persistPatchLimitDecision(forwardDecision); err != nil {
+		t.Fatalf("unexpected persistence error: %v", err)
+	}
+
+	_, err = evaluatePatchLimit("rke2-traefik", "v3.6.8-build20260302", "v3.6.6-build20260228", true)
+	if err == nil {
+		t.Fatalf("expected revert older than baseline to be rejected")
+	}
+
+	if !strings.Contains(err.Error(), "older than the release baseline") {
+		t.Fatalf("expected release-baseline guard error, got %q", err.Error())
 	}
 }

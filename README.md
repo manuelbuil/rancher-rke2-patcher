@@ -94,6 +94,8 @@ rke2-patcher image-patch traefik --revert
 - Refuses to patch when the target tag would move to a newer minor release.
 - Refuses to patch when the same component was already patched forward once for the current detected RKE2 version.
 - Refuses to revert when current tag is already the oldest available tag in the observed list.
+- Refuses to revert when there is no recorded baseline for the component on the current detected RKE2 version.
+- Refuses to revert when the target tag is older than the recorded release baseline for the component on the current detected RKE2 version.
 - Refuses to write if the target manifests directory does not exist and suggests setting `RKE2_PATCHER_DATA_DIR`.
 - If one or more `HelmChartConfig` objects already exist in the cluster for the same chart name and namespace, asks for confirmation before attempting a merge.
 - If merge is approved, prints the merged output in dry-run format and asks for a second confirmation before writing.
@@ -115,7 +117,6 @@ rke2-patcher image-patch traefik --revert
 - `flannel` -> `rancher/hardened-flannel`
 - `canal-calico` -> `rancher/hardened-calico`
 - `canal-flannel` -> `rancher/hardened-flannel`
-- `csi-snapshotter` -> `rancher/hardened-csi-snapshotter`
 - `coredns-cluster-autoscaler` -> `rancher/hardened-cluster-autoscaler`
 - `snapshot-controller` -> `rancher/hardened-snapshot-controller`
 

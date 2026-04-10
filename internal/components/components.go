@@ -10,7 +10,7 @@ type Component struct {
 	Name                string
 	Repository          string
 	HelmChartConfigName string
-	Workloads           []WorkloadRef
+	Workload            WorkloadRef
 }
 
 type WorkloadRef struct {
@@ -24,123 +24,121 @@ var registry = map[string]Component{
 		Name:                "rke2-traefik",
 		Repository:          "rancher/hardened-traefik",
 		HelmChartConfigName: "rke2-traefik",
-		Workloads: []WorkloadRef{{
+		Workload: WorkloadRef{
 			Kind:      "daemonset",
 			Namespace: "kube-system",
 			Name:      "rke2-traefik",
-		}},
+		},
 	},
 	"ingress-nginx": {
 		Name:                "rke2-ingress-nginx-controller",
 		Repository:          "rancher/nginx-ingress-controller",
 		HelmChartConfigName: "rke2-ingress-nginx",
-		Workloads: []WorkloadRef{{
+		Workload: WorkloadRef{
 			Kind:      "daemonset",
 			Namespace: "kube-system",
 			Name:      "rke2-ingress-nginx-controller",
-		}},
+		},
 	},
 	"coredns": {
 		Name:                "coredns",
 		Repository:          "rancher/hardened-coredns",
 		HelmChartConfigName: "rke2-coredns",
-		Workloads: []WorkloadRef{
-			{
-				Kind:      "deployment",
-				Namespace: "kube-system",
-				Name:      "rke2-coredns-rke2-coredns",
-			},
-			{
-				Kind:      "deployment",
-				Namespace: "kube-system",
-				Name:      "rke2-coredns-rke2-coredns-autoscaler",
-			},
+		Workload: WorkloadRef{
+			Kind:      "deployment",
+			Namespace: "kube-system",
+			Name:      "rke2-coredns-rke2-coredns",
 		},
 	},
 	"dns-node-cache": {
 		Name:                "dns-node-cache",
 		Repository:          "rancher/hardened-dns-node-cache",
 		HelmChartConfigName: "rke2-coredns",
+		Workload: WorkloadRef{
+			Kind:      "daemonset",
+			Namespace: "kube-system",
+			Name:      "node-local-dns",
+		},
 	},
 	"calico-operator": {
 		Name:                "calico-operator",
 		Repository:          "rancher/mirrored-calico-operator",
 		HelmChartConfigName: "rke2-calico",
-		Workloads: []WorkloadRef{{
+		Workload: WorkloadRef{
 			Kind:      "deployment",
 			Namespace: "tigera-operator",
 			Name:      "tigera-operator",
-		}},
+		},
 	},
 	"cilium-operator": {
 		Name:                "cilium-operator",
 		Repository:          "rancher/mirrored-cilium-operator-generic",
 		HelmChartConfigName: "rke2-cilium",
-		Workloads: []WorkloadRef{{
+		Workload: WorkloadRef{
 			Kind:      "deployment",
 			Namespace: "kube-system",
 			Name:      "cilium-operator",
-		}},
+		},
 	},
 	"metrics-server": {
 		Name:                "metrics-server",
 		Repository:          "rancher/hardened-k8s-metrics-server",
 		HelmChartConfigName: "rke2-metrics-server",
-		Workloads: []WorkloadRef{{
+		Workload: WorkloadRef{
 			Kind:      "deployment",
 			Namespace: "kube-system",
 			Name:      "rke2-metrics-server",
-		}},
+		},
 	},
 	"flannel": {
 		Name:                "flannel",
 		Repository:          "rancher/hardened-flannel",
 		HelmChartConfigName: "rke2-flannel",
-		Workloads: []WorkloadRef{{
+		Workload: WorkloadRef{
 			Kind:      "daemonset",
 			Namespace: "kube-system",
 			Name:      "kube-flannel-ds",
-		}},
+		},
 	},
 	"canal-calico": {
 		Name:                "canal-calico",
 		Repository:          "rancher/hardened-calico",
 		HelmChartConfigName: "rke2-canal",
-		Workloads: []WorkloadRef{{
+		Workload: WorkloadRef{
 			Kind:      "daemonset",
 			Namespace: "kube-system",
 			Name:      "rke2-canal",
-		}},
+		},
 	},
 	"canal-flannel": {
 		Name:                "canal-flannel",
 		Repository:          "rancher/hardened-flannel",
 		HelmChartConfigName: "rke2-canal",
-		Workloads: []WorkloadRef{{
+		Workload: WorkloadRef{
 			Kind:      "daemonset",
 			Namespace: "kube-system",
 			Name:      "rke2-canal",
-		}},
-	},
-	"csi-snapshotter": {
-		Name:                "csi-snapshotter",
-		Repository:          "rancher/hardened-csi-snapshotter",
-		HelmChartConfigName: "rke2-snapshot-controller",
+		},
 	},
 	"coredns-cluster-autoscaler": {
 		Name:                "coredns-cluster-autoscaler",
 		Repository:          "rancher/hardened-cluster-autoscaler",
 		HelmChartConfigName: "rke2-cluster-autoscaler",
+		Workload: WorkloadRef{
+			Kind:      "deployment",
+			Namespace: "kube-system",
+			Name:      "rke2-coredns-rke2-coredns-autoscaler",
+		},
 	},
 	"snapshot-controller": {
 		Name:                "snapshot-controller",
 		Repository:          "rancher/hardened-snapshot-controller",
 		HelmChartConfigName: "rke2-snapshot-controller",
-		Workloads: []WorkloadRef{{
+		Workload: WorkloadRef{
 			Kind:      "deployment",
 			Namespace: "kube-system",
 			Name:      "rke2-snapshot-controller",
-		}},
+		},
 	},
 }
 
