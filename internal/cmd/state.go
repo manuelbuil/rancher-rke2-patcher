@@ -6,12 +6,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/manuelbuil/PoCs/2026/rke2-patcher/internal/kube"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 const (
-	defaultRKE2DataDir     = "/var/lib/rancher/rke2"
-	patchLimitCacheDirEnv  = "RKE2_PATCHER_CACHE_DIR"
-	patchLimitStateSubPath = "server/rke2-patcher-cache/patch-limit-state.json"
+	patchLimitStateNamespaceEnv = "RKE2_PATCHER_CVE_NAMESPACE"
+	defaultPatchLimitNamespace  = "rke2-patcher"
+)
+
+var (
+	loadPatchLimitStateFromBackend = loadPatchLimitStateFromKubernetes
+	savePatchLimitStateToBackend   = savePatchLimitStateToKubernetes
 )
 
 func evaluatePatchLimit(componentName string, currentTag string, targetTag string, revert bool) (patchLimitDecision, error) {
@@ -20,8 +27,8 @@ func evaluatePatchLimit(componentName string, currentTag string, targetTag strin
 		return patchLimitDecision{}, fmt.Errorf("failed to resolve cluster version for patch-limit/revert check: %w", err)
 	}
 
-	stateFilePath := patchLimitStateFilePath()
-	state, err := loadPatchLimitState(stateFilePath)
+	namespace := patchLimitStateNamespace()
+	state, _, err := loadPatchLimitStateFromBackend(namespace)
 	if err != nil {
 		return patchLimitDecision{}, err
 	}
@@ -62,10 +69,10 @@ func evaluatePatchLimit(componentName string, currentTag string, targetTag strin
 	}
 
 	return patchLimitDecision{
-		ShouldPersist: true,
-		StateFilePath: stateFilePath,
-		EntryKey:      entryKey,
-		Entry:         entry,
+		ShouldPersist:  true,
+		StateNamespace: namespace,
+		EntryKey:       entryKey,
+		Entry:          entry,
 	}, nil
 }
 
@@ -74,68 +81,78 @@ func persistPatchLimitDecision(decision patchLimitDecision) error {
 		return nil
 	}
 
-	state, err := loadPatchLimitState(decision.StateFilePath)
-	if err != nil {
-		return err
+	stateNamespace := strings.TrimSpace(decision.StateNamespace)
+	if stateNamespace == "" {
+		stateNamespace = patchLimitStateNamespace()
 	}
 
-	if existing, found := state.Entries[decision.EntryKey]; found {
-		if existing.PatchedToTag == decision.Entry.PatchedToTag && existing.BaselineTag == decision.Entry.BaselineTag {
+	for attempt := 0; attempt < 5; attempt++ {
+		state, resourceVersion, err := loadPatchLimitStateFromBackend(stateNamespace)
+		if err != nil {
+			return err
+		}
+
+		if existing, found := state.Entries[decision.EntryKey]; found {
+			if existing.PatchedToTag == decision.Entry.PatchedToTag && existing.BaselineTag == decision.Entry.BaselineTag {
+				return nil
+			}
+
+			return fmt.Errorf("component %q is already recorded as patched once for RKE2 %s", existing.Component, existing.ClusterVersion)
+		}
+
+		state.Entries[decision.EntryKey] = decision.Entry
+		err = savePatchLimitStateToBackend(stateNamespace, state, resourceVersion)
+		if err == nil {
 			return nil
 		}
 
-		return fmt.Errorf("component %q is already recorded as patched once for RKE2 %s", existing.Component, existing.ClusterVersion)
+		if k8serrors.IsConflict(err) || k8serrors.IsAlreadyExists(err) {
+			continue
+		}
+
+		return err
 	}
 
-	state.Entries[decision.EntryKey] = decision.Entry
-	return savePatchLimitState(decision.StateFilePath, state)
+	return fmt.Errorf("failed to persist patch-limit state in ConfigMap %s/%s after retries", stateNamespace, kube.StateConfigMapName)
 }
 
-func patchLimitStateFilePath() string {
-	cacheDir := strings.TrimSpace(os.Getenv(patchLimitCacheDirEnv))
-	if cacheDir != "" {
-		return filepath.Join(cacheDir, "patch-limit-state.json")
+func patchLimitStateNamespace() string {
+	namespace := strings.TrimSpace(os.Getenv(patchLimitStateNamespaceEnv))
+	if namespace == "" {
+		return defaultPatchLimitNamespace
 	}
 
-	dataDir := strings.TrimSpace(os.Getenv("RKE2_PATCHER_DATA_DIR"))
-	if dataDir == "" {
-		dataDir = defaultRKE2DataDir
-	}
-
-	return filepath.Join(dataDir, patchLimitStateSubPath)
+	return namespace
 }
 
 func patchLimitEntryKey(clusterVersion string, componentName string) string {
 	return strings.TrimSpace(clusterVersion) + "|" + strings.ToLower(strings.TrimSpace(componentName))
 }
 
-func loadPatchLimitState(filePath string) (patchLimitState, error) {
+func loadPatchLimitStateFromKubernetes(namespace string) (patchLimitState, string, error) {
 	state := patchLimitState{Entries: map[string]patchLimitEntry{}}
 
-	content, err := os.ReadFile(filePath)
+	content, resourceVersion, err := kube.LoadStateConfigMapDataWithResourceVersion(namespace)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return state, nil
-		}
-		return patchLimitState{}, fmt.Errorf("failed to read patch-limit state file %q: %w", filePath, err)
+		return patchLimitState{}, "", err
 	}
 
-	if strings.TrimSpace(string(content)) == "" {
-		return state, nil
+	if strings.TrimSpace(content) == "" {
+		return state, resourceVersion, nil
 	}
 
-	if err := json.Unmarshal(content, &state); err != nil {
-		return patchLimitState{}, fmt.Errorf("failed to parse patch-limit state file %q: %w", filePath, err)
+	if err := json.Unmarshal([]byte(content), &state); err != nil {
+		return patchLimitState{}, "", fmt.Errorf("failed to parse patch-limit state payload in ConfigMap %s/%s key %q: %w", namespace, kube.StateConfigMapName, kube.StateConfigMapDataKey, err)
 	}
 
 	if state.Entries == nil {
 		state.Entries = map[string]patchLimitEntry{}
 	}
 
-	return state, nil
+	return state, resourceVersion, nil
 }
 
-func savePatchLimitState(filePath string, state patchLimitState) error {
+func savePatchLimitStateToKubernetes(namespace string, state patchLimitState, resourceVersion string) error {
 	if state.Entries == nil {
 		state.Entries = map[string]patchLimitEntry{}
 	}
@@ -145,18 +162,8 @@ func savePatchLimitState(filePath string, state patchLimitState) error {
 		return fmt.Errorf("failed to serialize patch-limit state: %w", err)
 	}
 
-	stateDir := filepath.Dir(filePath)
-	if err := os.MkdirAll(stateDir, 0755); err != nil {
-		return fmt.Errorf("failed to create patch-limit state directory %q: %w", stateDir, err)
-	}
-
-	tmpPath := filePath + ".tmp"
-	if err := os.WriteFile(tmpPath, content, 0644); err != nil {
-		return fmt.Errorf("failed to write temporary patch-limit state file %q: %w", tmpPath, err)
-	}
-
-	if err := os.Rename(tmpPath, filePath); err != nil {
-		return fmt.Errorf("failed to replace patch-limit state file %q: %w", filePath, err)
+	if err := kube.SaveStateConfigMapDataWithResourceVersion(namespace, string(content), resourceVersion); err != nil {
+		return err
 	}
 
 	return nil

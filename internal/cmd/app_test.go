@@ -255,8 +255,38 @@ func newTagsServer(t *testing.T, repository string, tags []string) *httptest.Ser
 	return server
 }
 
+func useInMemoryPatchLimitStateBackend(t *testing.T) {
+	t.Helper()
+
+	stored := patchLimitState{Entries: map[string]patchLimitEntry{}}
+	originalLoad := loadPatchLimitStateFromBackend
+	originalSave := savePatchLimitStateToBackend
+
+	loadPatchLimitStateFromBackend = func(_ string) (patchLimitState, string, error) {
+		copied := patchLimitState{Entries: map[string]patchLimitEntry{}}
+		for key, entry := range stored.Entries {
+			copied.Entries[key] = entry
+		}
+		return copied, "", nil
+	}
+
+	savePatchLimitStateToBackend = func(_ string, state patchLimitState, _ string) error {
+		copied := patchLimitState{Entries: map[string]patchLimitEntry{}}
+		for key, entry := range state.Entries {
+			copied.Entries[key] = entry
+		}
+		stored = copied
+		return nil
+	}
+
+	t.Cleanup(func() {
+		loadPatchLimitStateFromBackend = originalLoad
+		savePatchLimitStateToBackend = originalSave
+	})
+}
+
 func TestEvaluatePatchLimit_OnlyOneForwardPatchPerComponentAndClusterVersion(t *testing.T) {
-	t.Setenv(patchLimitCacheDirEnv, t.TempDir())
+	useInMemoryPatchLimitStateBackend(t)
 
 	originalClusterVersionResolver := clusterVersionResolver
 	clusterVersionResolver = func() (string, error) {
@@ -294,7 +324,7 @@ func TestEvaluatePatchLimit_OnlyOneForwardPatchPerComponentAndClusterVersion(t *
 }
 
 func TestEvaluatePatchLimit_AllowsForwardPatchAfterRKE2Upgrade(t *testing.T) {
-	t.Setenv(patchLimitCacheDirEnv, t.TempDir())
+	useInMemoryPatchLimitStateBackend(t)
 
 	clusterVersion := "v1.35.2+rke2r1"
 	originalClusterVersionResolver := clusterVersionResolver
@@ -325,7 +355,7 @@ func TestEvaluatePatchLimit_AllowsForwardPatchAfterRKE2Upgrade(t *testing.T) {
 }
 
 func TestEvaluatePatchLimit_RevertRequiresRecordedBaseline(t *testing.T) {
-	t.Setenv(patchLimitCacheDirEnv, t.TempDir())
+	useInMemoryPatchLimitStateBackend(t)
 
 	originalClusterVersionResolver := clusterVersionResolver
 	clusterVersionResolver = func() (string, error) {
@@ -350,7 +380,7 @@ func TestEvaluatePatchLimit_RevertRequiresRecordedBaseline(t *testing.T) {
 }
 
 func TestEvaluatePatchLimit_RevertAllowsReturningToBaseline(t *testing.T) {
-	t.Setenv(patchLimitCacheDirEnv, t.TempDir())
+	useInMemoryPatchLimitStateBackend(t)
 
 	originalClusterVersionResolver := clusterVersionResolver
 	clusterVersionResolver = func() (string, error) {
@@ -380,7 +410,7 @@ func TestEvaluatePatchLimit_RevertAllowsReturningToBaseline(t *testing.T) {
 }
 
 func TestEvaluatePatchLimit_RevertRejectsTagOlderThanBaseline(t *testing.T) {
-	t.Setenv(patchLimitCacheDirEnv, t.TempDir())
+	useInMemoryPatchLimitStateBackend(t)
 
 	originalClusterVersionResolver := clusterVersionResolver
 	clusterVersionResolver = func() (string, error) {

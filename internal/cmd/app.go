@@ -11,7 +11,7 @@ import (
 	cli "github.com/urfave/cli/v2"
 )
 
-const version = "0.8.0"
+const version = "0.8.3"
 const usageExitCode = 2
 
 var clusterVersionResolver = kube.ClusterVersion
@@ -21,6 +21,7 @@ func BuildCLIApp() *cli.App {
 	app := &cli.App{
 		Name:        "rke2-patcher",
 		Usage:       "Patch and inspect RKE2 component images",
+		Description: fmt.Sprintf("Supported components: %s", strings.Join(components.Supported(), ", ")),
 		ArgsUsage:   "<command> <component> [options]",
 		HideVersion: true,
 		Flags: []cli.Flag{
@@ -35,12 +36,18 @@ func BuildCLIApp() *cli.App {
 				return nil
 			}
 
-			return cli.Exit("a command is required", usageExitCode)
+			return cli.ShowAppHelp(ctx)
 		},
 		CommandNotFound: func(ctx *cli.Context, command string) {
 			_ = cli.ShowAppHelp(ctx)
 		},
 		Commands: []*cli.Command{
+			{
+				Name:      "config",
+				Usage:     "Show effective configuration values",
+				ArgsUsage: "",
+				Action:    runConfigCommand,
+			},
 			{
 				Name:      "image-cve",
 				Usage:     "List CVEs for the currently running image of a component",
@@ -175,6 +182,7 @@ func runImagePatchCommand(ctx *cli.Context) error {
 func printUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  rke2-patcher --version")
+	fmt.Println("  rke2-patcher config")
 	fmt.Println("  rke2-patcher image-cve <component>")
 	fmt.Println("  rke2-patcher image-list <component> [--with-cves] [--verbose]")
 	fmt.Println("  rke2-patcher image-patch <component> [--dry-run] [--revert]")
@@ -185,10 +193,9 @@ func printUsage() {
 	fmt.Println("  KUBECONFIG                         kubeconfig path (first file in list is used)")
 	fmt.Println("  RKE2_PATCHER_REGISTRY              registry base URL (default: registry.rancher.com)")
 	fmt.Println("  RKE2_PATCHER_DATA_DIR              path to RKE2 data directory")
-	fmt.Println("  RKE2_PATCHER_CACHE_DIR             path to cache directory for patch-limit state")
 	fmt.Println("  RKE2_PATCHER_HELM_NAMESPACE        Helm namespace override")
 	fmt.Println("  RKE2_PATCHER_CVE_MODE              CVE scanner mode (cluster|local)")
-	fmt.Println("  RKE2_PATCHER_CVE_NAMESPACE         namespace for the CVE scanner job")
+	fmt.Println("  RKE2_PATCHER_CVE_NAMESPACE         namespace for CVE jobs and patch-limit state ConfigMap")
 	fmt.Println("  RKE2_PATCHER_CVE_SCANNER_IMAGE     Trivy scanner image to use")
 	fmt.Println("  RKE2_PATCHER_CVE_JOB_TIMEOUT       timeout for the CVE scanner job (e.g. 5m)")
 }

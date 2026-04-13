@@ -27,8 +27,8 @@ type patchLimitEntry struct {
 }
 
 type patchLimitDecision struct {
-	ShouldPersist bool
-	StateFilePath string
+	ShouldPersist bool // when reverting we don't persist it
+	StateNamespace string
 	EntryKey      string
 	Entry         patchLimitEntry
 }

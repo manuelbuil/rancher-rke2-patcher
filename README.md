@@ -18,6 +18,7 @@ make build
 
 ```bash
 rke2-patcher --version
+rke2-patcher config
 rke2-patcher image-cve <component>
 rke2-patcher image-list <component> [--with-cves] [--verbose]
 rke2-patcher image-patch <component> [--dry-run] [--revert]
@@ -34,6 +35,15 @@ make image-cve COMPONENT=traefik
 make image-list COMPONENT=traefik
 make image-patch COMPONENT=traefik
 ```
+
+### 0) Show effective configuration
+
+```bash
+rke2-patcher config
+```
+
+- Prints effective/default/source for relevant runtime config values.
+- Includes registry, scanner mode, scanner image, scanner namespace, timeout, manifests path, and RKE2 patcher state ConfigMap coordinates.
 
 ### 1) CVEs of current running image
 
@@ -136,6 +146,7 @@ rke2-patcher image-patch traefik --revert
     - `~/.kube/config`
 - Network access to the configured image registry endpoint (`RKE2_PATCHER_REGISTRY`, default `registry.rancher.com`).
 - For `image-cve` default mode (`RKE2_PATCHER_CVE_MODE=cluster`), Kubernetes access that allows creating and reading Jobs/Pods in the scan namespace.
+- For `image-patch`, Kubernetes access that allows reading/writing ConfigMaps in the state namespace (same namespace used by `RKE2_PATCHER_CVE_NAMESPACE`; default `rke2-patcher`).
 - Local scanner installation is optional and only needed when using local mode (`RKE2_PATCHER_CVE_MODE=local`):
   - `trivy`, or
   - `grype`
@@ -163,9 +174,6 @@ The `image-patch` command supports these overrides:
   - RKE2 data directory used to derive the manifest output path.
   - Default: `/var/lib/rancher/rke2`
   - Effective manifests path: `<data-dir>/server/manifests`
-- `RKE2_PATCHER_CACHE_DIR`
-  - Optional directory used to persist patch-limit state (one forward patch per component per RKE2 version).
-  - Default state file path: `<data-dir>/server/rke2-patcher-cache/patch-limit-state.json`
 - `RKE2_PATCHER_HELM_NAMESPACE`
   - `.metadata.namespace` for the generated `HelmChartConfig`.
   - Default: `kube-system`
@@ -180,8 +188,16 @@ The `image-cve` command supports these overrides:
   - `local`: only local scanners.
 
 - `RKE2_PATCHER_CVE_NAMESPACE`
-  - Namespace where the scan Job is created in cluster mode.
+  - Namespace where scan Jobs are created in cluster mode.
+  - Also used as namespace for RKE2 patcher state storage.
   - Default: `rke2-patcher`
+
+Patch-limit state storage (not configurable):
+
+- Backend: Kubernetes `ConfigMap`
+- Name: `rke2-patcher-state`
+- Data key: `patch-limit-state.json`
+- Namespace: `RKE2_PATCHER_CVE_NAMESPACE` (default `rke2-patcher`)
 
 - `RKE2_PATCHER_CVE_SCANNER_IMAGE`
   - Scanner image used by cluster mode.

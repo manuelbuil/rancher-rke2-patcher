@@ -15,6 +15,7 @@ func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, erro
 	return f(request)
 }
 
+// ClusterVersion retrieves the Kubernetes cluster version by querying the kube API server
 func ClusterVersion() (string, error) {
 	api, err := kubeAPIClient()
 	if err != nil {
