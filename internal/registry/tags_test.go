@@ -68,10 +68,10 @@ func TestParseNextPageURL(t *testing.T) {
 	})
 }
 
-func TestResolveRegistryBaseURL(t *testing.T) {
+func TestResolveListTagsInputs(t *testing.T) {
 	t.Run("default host", func(t *testing.T) {
 		t.Setenv(registryEnv, "")
-		baseURL, err := resolveRegistryBaseURL()
+		baseURL, repository, err := resolveImageRepo("rancher/hardened-traefik")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -79,11 +79,15 @@ func TestResolveRegistryBaseURL(t *testing.T) {
 		if baseURL != "https://"+defaultRegistryHost {
 			t.Fatalf("unexpected base URL: %q", baseURL)
 		}
+
+		if repository != "rancher/hardened-traefik" {
+			t.Fatalf("unexpected repository: %q", repository)
+		}
 	})
 
 	t.Run("host without scheme", func(t *testing.T) {
 		t.Setenv(registryEnv, "mirror.local:5000")
-		baseURL, err := resolveRegistryBaseURL()
+		baseURL, _, err := resolveImageRepo("rancher/hardened-traefik")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -95,7 +99,7 @@ func TestResolveRegistryBaseURL(t *testing.T) {
 
 	t.Run("value with scheme and path", func(t *testing.T) {
 		t.Setenv(registryEnv, "http://registry.local/proxy/")
-		baseURL, err := resolveRegistryBaseURL()
+		baseURL, _, err := resolveImageRepo("rancher/hardened-traefik")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -107,7 +111,7 @@ func TestResolveRegistryBaseURL(t *testing.T) {
 
 	t.Run("invalid scheme", func(t *testing.T) {
 		t.Setenv(registryEnv, "ftp://registry.local")
-		_, err := resolveRegistryBaseURL()
+		_, _, err := resolveImageRepo("rancher/hardened-traefik")
 		if err == nil {
 			t.Fatalf("expected error, got nil")
 		}
@@ -115,29 +119,18 @@ func TestResolveRegistryBaseURL(t *testing.T) {
 
 	t.Run("missing host", func(t *testing.T) {
 		t.Setenv(registryEnv, "https://")
-		_, err := resolveRegistryBaseURL()
+		_, _, err := resolveImageRepo("rancher/hardened-traefik")
 		if err == nil {
 			t.Fatalf("expected error, got nil")
-		}
-	})
-}
-
-func TestNormalizeRepository(t *testing.T) {
-	t.Run("valid repository", func(t *testing.T) {
-		repository, err := normalizeRepository("rancher/hardened-traefik")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		if repository != "rancher/hardened-traefik" {
-			t.Fatalf("unexpected repository: %q", repository)
 		}
 	})
 
 	t.Run("invalid repository", func(t *testing.T) {
-		_, err := normalizeRepository("hardened-traefik")
-		if err == nil {
-			t.Fatalf("expected error, got nil")
+		t.Setenv(registryEnv, "")
+		_, _, err := resolveImageRepo("hardened-traefik")
+		if err != nil {
+			return
 		}
+		t.Fatalf("expected error, got nil")
 	})
 }

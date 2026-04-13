@@ -26,23 +26,24 @@ type tagsPage struct {
 	Tags []string `json:"tags"`
 }
 
+// realm: is the URL of the auth server
+// service: is the name of the registry requesting the token
+// scope: what permission we are asking (e.g. repository:rancher/hardened-traefik:pull)
 type bearerChallenge struct {
 	Realm   string
 	Service string
 	Scope   string
 }
 
+// ListTags retrieves a list of tags for the specified repository from the registry, handling pagination
+// and authentication as needed. The limit parameter controls how many tags to retrieve, and must be greater
+// than zero.
 func ListTags(repository string, limit int) ([]Tag, error) {
 	if limit <= 0 {
 		return nil, fmt.Errorf("limit must be greater than zero")
 	}
 
-	baseURL, err := resolveRegistryBaseURL()
-	if err != nil {
-		return nil, err
-	}
-
-	repositoryPath, err := normalizeRepository(repository)
+	baseURL, repositoryPath, err := resolveImageRepo(repository)
 	if err != nil {
 		return nil, err
 	}
@@ -63,11 +64,12 @@ func ListTags(repository string, limit int) ([]Tag, error) {
 		if pageErr != nil {
 			return nil, pageErr
 		}
-		if strings.TrimSpace(resolvedToken) != "" {
-			bearerToken = strings.TrimSpace(resolvedToken)
+		if resolvedToken != "" {
+			bearerToken = resolvedToken
 		}
 
 		for _, name := range page.Tags {
+			// There are some weird tags that we want to filter out
 			if strings.EqualFold(name, "latest") {
 				continue
 			}
@@ -111,17 +113,24 @@ func LatestTag(repository string) (Tag, error) {
 	return tags[0], nil
 }
 
+// getTagsPage retrieves a single page of tags from the registry API, handling bearer token authentication if necessary (needed for suse registry)
 func getTagsPage(client *http.Client, requestURL string, baseURL string, repository string, bearerToken string) (tagsPage, string, string, error) {
+
+	// First attempt with whatever bearer token we have (empty)
 	page, nextURL, err := getTagsPageWithBearer(client, requestURL, baseURL, bearerToken)
 	if err == nil {
 		return page, nextURL, bearerToken, nil
 	}
 
+	// if error is 401 (StatusUnauthorized) we try again because it might be that the registry requires a
+	// bearer token and we didn't have one or had an invalid one, so we need to fetch a new token and retry
+	// the request. This is apparently typical for OCI registries like SUSE's
 	statusErr, ok := err.(httpStatusError)
 	if !ok || statusErr.StatusCode != http.StatusUnauthorized {
 		return tagsPage{}, "", "", err
 	}
 
+	// The 401 error might contain the information we need to authenticate
 	challenge, parseErr := parseBearerChallenge(statusErr.WWWAuthenticate)
 	if parseErr != nil {
 		return tagsPage{}, "", "", parseErr
@@ -131,11 +140,13 @@ func getTagsPage(client *http.Client, requestURL string, baseURL string, reposit
 		challenge.Scope = fmt.Sprintf("repository:%s:pull", repository)
 	}
 
+	// Now we request a temporary bearer token with the information from the challenge
 	token, tokenErr := fetchBearerToken(client, challenge)
 	if tokenErr != nil {
 		return tagsPage{}, "", "", tokenErr
 	}
 
+	// We try again with the new token
 	page, nextURL, err = getTagsPageWithBearer(client, requestURL, baseURL, token)
 	if err != nil {
 		return tagsPage{}, "", "", err
@@ -144,14 +155,16 @@ func getTagsPage(client *http.Client, requestURL string, baseURL string, reposit
 	return page, nextURL, token, nil
 }
 
+// getTagsPageWithBearer performs the actual HTTP request to get a page of tags, using the provided bearer token for authentication
 func getTagsPageWithBearer(client *http.Client, requestURL string, baseURL string, bearerToken string) (tagsPage, string, error) {
 	request, err := http.NewRequest(http.MethodGet, requestURL, nil)
 	if err != nil {
 		return tagsPage{}, "", err
 	}
 
-	if strings.TrimSpace(bearerToken) != "" {
-		request.Header.Set("Authorization", "Bearer "+strings.TrimSpace(bearerToken))
+	bearerToken = strings.TrimSpace(bearerToken)
+	if bearerToken != "" {
+		request.Header.Set("Authorization", "Bearer "+bearerToken)
 	}
 
 	response, err := client.Do(request)
@@ -182,23 +195,20 @@ func getTagsPageWithBearer(client *http.Client, requestURL string, baseURL strin
 	return page, nextURL, nil
 }
 
+// fetchBearerToken requests a bearer token from the registry's auth server using the information provided
+// in the WWW-Authenticate challenge
 func fetchBearerToken(client *http.Client, challenge bearerChallenge) (string, error) {
-	realm := strings.TrimSpace(challenge.Realm)
-	if realm == "" {
-		return "", fmt.Errorf("registry authorization challenge did not include a realm")
-	}
-
-	authURL, err := url.Parse(realm)
+	authURL, err := url.Parse(challenge.Realm)
 	if err != nil {
-		return "", fmt.Errorf("invalid registry authorization realm %q: %w", realm, err)
+		return "", fmt.Errorf("invalid registry authorization realm %q: %w", challenge.Realm, err)
 	}
 
 	query := authURL.Query()
-	if strings.TrimSpace(challenge.Service) != "" {
-		query.Set("service", strings.TrimSpace(challenge.Service))
+	if challenge.Service != "" {
+		query.Set("service", challenge.Service)
 	}
-	if strings.TrimSpace(challenge.Scope) != "" {
-		query.Set("scope", strings.TrimSpace(challenge.Scope))
+	if challenge.Scope != "" {
+		query.Set("scope", challenge.Scope)
 	}
 	authURL.RawQuery = query.Encode()
 
@@ -234,6 +244,8 @@ func fetchBearerToken(client *http.Client, challenge bearerChallenge) (string, e
 	return token, nil
 }
 
+// parseBearerChallenge parses the WWW-Authenticate header value from a 401 Unauthorized response to extract
+// the information needed to request a bearer token for registry authentication
 func parseBearerChallenge(headerValue string) (bearerChallenge, error) {
 	trimmed := strings.TrimSpace(headerValue)
 	if trimmed == "" {
@@ -255,8 +267,9 @@ func parseBearerChallenge(headerValue string) (bearerChallenge, error) {
 			continue
 		}
 
+		key = strings.ToLower(strings.TrimSpace(key))
 		decoded := strings.Trim(strings.TrimSpace(value), "\"")
-		switch strings.ToLower(strings.TrimSpace(key)) {
+		switch key {
 		case "realm":
 			challenge.Realm = decoded
 		case "service":
@@ -266,26 +279,27 @@ func parseBearerChallenge(headerValue string) (bearerChallenge, error) {
 		}
 	}
 
-	if strings.TrimSpace(challenge.Realm) == "" {
+	if challenge.Realm == "" {
 		return bearerChallenge{}, fmt.Errorf("registry authorization challenge did not include a realm")
 	}
 
 	return challenge, nil
 }
 
+// parseNextPageURL parses the Link header from the registry API response to extract the URL for the next page
+// of tags, if present
 func parseNextPageURL(linkHeader string, baseURL string) (string, error) {
-	trimmed := strings.TrimSpace(linkHeader)
-	if trimmed == "" {
+	if strings.TrimSpace(linkHeader) == "" {
 		return "", nil
 	}
 
-	start := strings.Index(trimmed, "<")
-	end := strings.Index(trimmed, ">")
+	start := strings.Index(linkHeader, "<")
+	end := strings.Index(linkHeader, ">")
 	if start < 0 || end <= start+1 {
 		return "", fmt.Errorf("invalid Link header for tags pagination: %q", linkHeader)
 	}
 
-	next := strings.TrimSpace(trimmed[start+1 : end])
+	next := strings.TrimSpace(linkHeader[start+1 : end])
 	if next == "" {
 		return "", nil
 	}
@@ -307,7 +321,12 @@ func parseNextPageURL(linkHeader string, baseURL string) (string, error) {
 	return base.ResolveReference(parsedNext).String(), nil
 }
 
-func resolveRegistryBaseURL() (string, error) {
+func resolveImageRepo(repository string) (string, string, error) {
+	repositoryPath, err := normalizeRepositoryPath(repository)
+	if err != nil {
+		return "", "", err
+	}
+
 	rawValue := strings.TrimSpace(os.Getenv(registryEnv))
 	if rawValue == "" {
 		rawValue = defaultRegistryHost
@@ -319,27 +338,27 @@ func resolveRegistryBaseURL() (string, error) {
 
 	parsed, err := url.Parse(rawValue)
 	if err != nil {
-		return "", fmt.Errorf("invalid %s value %q: %w", registryEnv, rawValue, err)
+		return "", "", fmt.Errorf("invalid %s value %q: %w", registryEnv, rawValue, err)
 	}
 
 	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
 	if scheme != "https" && scheme != "http" {
-		return "", fmt.Errorf("invalid %s value %q: scheme must be http or https", registryEnv, rawValue)
+		return "", "", fmt.Errorf("invalid %s value %q: scheme must be http or https", registryEnv, rawValue)
 	}
 
 	host := strings.TrimSpace(parsed.Host)
 	if host == "" {
-		return "", fmt.Errorf("invalid %s value %q: missing registry host", registryEnv, rawValue)
+		return "", "", fmt.Errorf("invalid %s value %q: missing registry host", registryEnv, rawValue)
 	}
 
 	parsed.Path = strings.TrimRight(parsed.Path, "/")
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 
-	return parsed.String(), nil
+	return parsed.String(), repositoryPath, nil
 }
 
-func normalizeRepository(repository string) (string, error) {
+func normalizeRepositoryPath(repository string) (string, error) {
 	trimmed := strings.Trim(strings.TrimSpace(repository), "/")
 	if trimmed == "" {
 		return "", fmt.Errorf("repository %q must be in the format <namespace>/<repo>", repository)
@@ -359,6 +378,7 @@ func normalizeRepository(repository string) (string, error) {
 	return trimmed, nil
 }
 
+// escapeRepositoryPath applies URL path escaping to each segment of the repository path to ensure special characters are properly encoded in the API request URL
 func escapeRepositoryPath(repository string) string {
 	parts := strings.Split(repository, "/")
 	escaped := make([]string, 0, len(parts))

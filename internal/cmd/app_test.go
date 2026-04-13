@@ -1,6 +1,8 @@
-package main
+package cmd
 
 import (
+	"errors"
+	"flag"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,61 +13,64 @@ import (
 	"testing"
 
 	"github.com/manuelbuil/PoCs/2026/rke2-patcher/internal/registry"
+	cli "github.com/urfave/cli/v2"
 )
 
-func TestParseImagePatchOptions(t *testing.T) {
-	tests := []struct {
-		name         string
-		args         []string
-		expected     imagePatchOptions
-		errContains  string
-		errContains2 string
-	}{
-		{
-			name:     "no options",
-			args:     nil,
-			expected: imagePatchOptions{},
-		},
-		{
-			name: "dry run and revert",
-			args: []string{"--dry-run", "--revert"},
-			expected: imagePatchOptions{
-				DryRun: true,
-				Revert: true,
-			},
-		},
-		{
-			name:         "unsupported option",
-			args:         []string{"--unknown"},
-			errContains:  "unsupported image-patch option",
-			errContains2: "--unknown",
-		},
+func TestRunImageListCommandVerboseRequiresWithCVEs(t *testing.T) {
+	app := BuildCLIApp()
+	set := flag.NewFlagSet("image-list", flag.ContinueOnError)
+	set.Bool("with-cves", false, "")
+	set.Bool("verbose", false, "")
+
+	if err := set.Parse([]string{"--verbose", "rke2-traefik"}); err != nil {
+		t.Fatalf("failed to parse flags: %v", err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			options, err := parseImagePatchOptions(tt.args)
-			if tt.errContains != "" {
-				if err == nil {
-					t.Fatalf("expected error containing %q, got nil", tt.errContains)
-				}
-				if !strings.Contains(err.Error(), tt.errContains) {
-					t.Fatalf("expected error containing %q, got %q", tt.errContains, err.Error())
-				}
-				if tt.errContains2 != "" && !strings.Contains(err.Error(), tt.errContains2) {
-					t.Fatalf("expected error containing %q, got %q", tt.errContains2, err.Error())
-				}
-				return
-			}
+	ctx := cli.NewContext(app, set, nil)
+	err := runImageListCommand(ctx)
+	if err == nil {
+		t.Fatalf("expected validation error, got nil")
+	}
 
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+	if !strings.Contains(err.Error(), "--verbose requires --with-cves") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
-			if !reflect.DeepEqual(options, tt.expected) {
-				t.Fatalf("unexpected options: %#v", options)
-			}
-		})
+	var exitErr cli.ExitCoder
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected cli exit error, got %T", err)
+	}
+	if exitErr.ExitCode() != 2 {
+		t.Fatalf("unexpected exit code: %d", exitErr.ExitCode())
+	}
+}
+
+func TestRunImagePatchCommandRejectsExtraArguments(t *testing.T) {
+	app := BuildCLIApp()
+	set := flag.NewFlagSet("image-patch", flag.ContinueOnError)
+	set.Bool("dry-run", false, "")
+	set.Bool("revert", false, "")
+
+	if err := set.Parse([]string{"--dry-run", "rke2-traefik", "extra"}); err != nil {
+		t.Fatalf("failed to parse flags: %v", err)
+	}
+
+	ctx := cli.NewContext(app, set, nil)
+	err := runImagePatchCommand(ctx)
+	if err == nil {
+		t.Fatalf("expected validation error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "unexpected extra argument(s): extra") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var exitErr cli.ExitCoder
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected cli exit error, got %T", err)
+	}
+	if exitErr.ExitCode() != 2 {
+		t.Fatalf("unexpected exit code: %d", exitErr.ExitCode())
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 const cveModeEnv = "RKE2_PATCHER_CVE_MODE"
 
 const (
+	// Prefixes used to parse batch scan output from the cluster scanner job to frame each image's output
 	batchScanBeginPrefix = "__RKE2_PATCHER_TRIVY_BEGIN__"
 	batchScanRCPrefix    = "__RKE2_PATCHER_TRIVY_RC__"
 	batchScanEndPrefix   = "__RKE2_PATCHER_TRIVY_END__"
@@ -42,7 +43,7 @@ var (
 	listCVEsForImageLocal  = scanImageLocally
 )
 
-// ListCVEsForImage scans the given image for CVEs using the appropriate scanning mode (local or cluster) and returns the CVEs found
+// ListCVEsForImage scans the given image for CVEs using the appropriate scanning mode (local or cluster)
 func ListCVEsForImage(image string) (ResultCVEs, error) {
 	mode, err := resolveScanMode()
 	if err != nil {
@@ -53,6 +54,43 @@ func ListCVEsForImage(image string) (ResultCVEs, error) {
 		return listCVEsForImageLocal(image)
 	}
 
+	return listCVEsForImageInCluster(image)
+}
+
+// ListCVEsForImages scans a slice of images for CVEs using the appropriate scanning mode (local or cluster)
+func ListCVEsForImages(images []string) (map[string]ResultCVEs, map[string]error, error) {
+	mode, err := resolveScanMode()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if mode == "local" {
+		results, errorsByImage := listCVEsForImagesLocal(images)
+		return results, errorsByImage, nil
+	}
+
+	return listCVEsForImagesInCluster(images)
+}
+
+// listCVEsForImagesLocal scans each image individually with the local scanner
+func listCVEsForImagesLocal(images []string) (map[string]ResultCVEs, map[string]error) {
+	results := make(map[string]ResultCVEs)
+	errorsByImage := make(map[string]error)
+	for _, image := range images {
+		result, scanErr := listCVEsForImageLocal(image)
+		if scanErr != nil {
+			errorsByImage[image] = scanErr
+			continue
+		}
+
+		results[image] = result
+	}
+
+	return results, errorsByImage
+}
+
+// listCVEsForImageInCluster scans the given image with the cluster scanner and returns the CVEs found
+func listCVEsForImageInCluster(image string) (ResultCVEs, error) {
 	output, scanErr := kube.ScanImageWithTrivyJob(image)
 	if scanErr == nil {
 		cves, parseErr := trivyCVEsFromJSON(output)
@@ -64,68 +102,9 @@ func ListCVEsForImage(image string) (ResultCVEs, error) {
 	return ResultCVEs{}, fmt.Errorf("cluster scanner failed: %v", scanErr)
 }
 
-// ResolveScanMode resolves what scan mode we use
-func ResolveScanMode() (string, error) {
-	return resolveScanMode()
-}
 
-func ListCVEsForImages(images []string) (map[string]ResultCVEs, map[string]error, error) {
-	mode, err := resolveScanMode()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	targetImages := make([]string, 0, len(images))
-	for _, image := range images {
-		trimmed := strings.TrimSpace(image)
-		if trimmed == "" {
-			continue
-		}
-		targetImages = append(targetImages, trimmed)
-	}
-
-	if len(targetImages) == 0 {
-		return map[string]ResultCVEs{}, map[string]error{}, nil
-	}
-
-	if mode == "local" {
-		results := make(map[string]ResultCVEs)
-		errorsByImage := make(map[string]error)
-
-		for _, image := range targetImages {
-			result, scanErr := listCVEsForImageLocal(image)
-			if scanErr != nil {
-				errorsByImage[image] = scanErr
-				continue
-			}
-
-			results[image] = result
-		}
-
-		return results, errorsByImage, nil
-	}
-
-	return listForImagesInCluster(targetImages)
-}
-
-func ListForImagesInCluster(images []string) (map[string]ResultCVEs, map[string]error, error) {
-	targetImages := make([]string, 0, len(images))
-	for _, image := range images {
-		trimmed := strings.TrimSpace(image)
-		if trimmed == "" {
-			continue
-		}
-		targetImages = append(targetImages, trimmed)
-	}
-
-	if len(targetImages) == 0 {
-		return map[string]ResultCVEs{}, map[string]error{}, nil
-	}
-
-	return listForImagesInCluster(targetImages)
-}
-
-func listForImagesInCluster(targetImages []string) (map[string]ResultCVEs, map[string]error, error) {
+// listCVEsForImagesInCluster scans the given images with the cluster scanner
+func listCVEsForImagesInCluster(targetImages []string) (map[string]ResultCVEs, map[string]error, error) {
 	output, err := scanImagesWithTrivyJob(targetImages, true)
 	if err != nil {
 		return nil, nil, fmt.Errorf("cluster scanner failed: %w", err)
@@ -141,6 +120,7 @@ func listForImagesInCluster(targetImages []string) (map[string]ResultCVEs, map[s
 	for scanner.Scan() {
 		line := scanner.Text()
 		switch {
+		// The different prefixes are used to frame the output of each image's scan in the batch job output
 		case strings.HasPrefix(line, batchScanBeginPrefix):
 			currentImage = strings.TrimSpace(strings.TrimPrefix(line, batchScanBeginPrefix))
 			if _, found := chunksByImage[currentImage]; !found {

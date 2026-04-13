@@ -101,65 +101,22 @@ func kubeClientset() (*kubernetes.Clientset, error) {
 // ScanImageWithTrivyJob creates a Kubernetes Job to scan the given image with Trivy inside the cluster and waits for the job to complete, returning the logs of the job which contain the scan results.
 func ScanImageWithTrivyJob(image string) ([]byte, error) {
 	targetImage := strings.TrimSpace(image)
-
-	clientset, err := kubeClientset()
-	if err != nil {
-		return nil, err
-	}
-
-	namespace := strings.TrimSpace(os.Getenv(cveNamespaceEnv))
-	if namespace == "" {
-		namespace = defaultCVENamespace
-	}
-
-	if err := ensureNamespaceForScanJob(clientset, namespace); err != nil {
-		return nil, err
-	}
-
-	fmt.Println("Checking CVEs with in-cluster scanner job. Please wait...")
-
-	scannerImage := strings.TrimSpace(os.Getenv(cveScannerImageEnv))
-	if scannerImage == "" {
-		scannerImage = defaultCVEScanImage
-	}
-
-	timeout := defaultCVEJobTimeout
-	if configured := strings.TrimSpace(os.Getenv(cveJobTimeoutEnv)); configured != "" {
-		parsedTimeout, parseErr := time.ParseDuration(configured)
-		if parseErr != nil {
-			return nil, fmt.Errorf("invalid %s value %q: %w", cveJobTimeoutEnv, configured, parseErr)
-		}
-		if parsedTimeout <= 0 {
-			return nil, fmt.Errorf("invalid %s value %q: must be greater than zero", cveJobTimeoutEnv, configured)
-		}
-		timeout = parsedTimeout
-	}
-
 	jobName := fmt.Sprintf("rke2-patcher-cve-%d", time.Now().UnixNano())
-	if err := createScanJob(clientset, namespace, jobName, scannerImage, targetImage); err != nil {
-		return nil, err
-	}
-	defer func() {
-		_ = deleteJob(clientset, namespace, jobName)
-	}()
+	progressMessage := "Checking CVEs with in-cluster scanner job. Please wait..."
 
-	return waitForScanJobCompletion(clientset, namespace, jobName, timeout)
+	return runScanJob([]string{targetImage}, jobName, progressMessage, true)
 }
 
+// ScanImagesWithTrivyJob is a batch version of ScanImageWithTrivyJob that accepts multiple images to scan in the same job and returns the combined logs of the job which contain the scan results for all images. The logs are expected to be prefixed with batchScanBeginPrefix, batchScanRCPrefix and batchScanEndPrefix to allow parsing each image's results separately if needed.
 func ScanImagesWithTrivyJob(images []string, showProgress bool) ([]byte, error) {
-	targetImages := make([]string, 0, len(images))
-	for _, image := range images {
-		trimmed := strings.TrimSpace(image)
-		if trimmed == "" {
-			continue
-		}
-		targetImages = append(targetImages, trimmed)
-	}
+	jobName := fmt.Sprintf("rke2-patcher-cve-batch-%d", time.Now().UnixNano())
+	progressMessage := fmt.Sprintf("Checking CVEs with in-cluster scanner job for %d images. Please wait...", len(images))
 
-	if len(targetImages) == 0 {
-		return nil, fmt.Errorf("target images cannot be empty")
-	}
+	return runScanJob(images, jobName, progressMessage, showProgress)
+}
 
+//runScanJob handles the logic of creating the scan job and waiting for its completion
+func runScanJob(targetImages []string, jobName string, progressMessage string, showProgress bool) ([]byte, error) {
 	clientset, err := kubeClientset()
 	if err != nil {
 		return nil, err
@@ -175,7 +132,7 @@ func ScanImagesWithTrivyJob(images []string, showProgress bool) ([]byte, error) 
 	}
 
 	if showProgress {
-		fmt.Printf("Checking CVEs with in-cluster scanner job for %d images. Please wait...\n", len(targetImages))
+		fmt.Println(progressMessage)
 	}
 
 	scannerImage := strings.TrimSpace(os.Getenv(cveScannerImageEnv))
@@ -195,8 +152,7 @@ func ScanImagesWithTrivyJob(images []string, showProgress bool) ([]byte, error) 
 		timeout = parsedTimeout
 	}
 
-	jobName := fmt.Sprintf("rke2-patcher-cve-batch-%d", time.Now().UnixNano())
-	if err := createBatchScanJob(clientset, namespace, jobName, scannerImage, targetImages); err != nil {
+	if err := createScanJob(clientset, namespace, jobName, scannerImage, targetImages); err != nil {
 		return nil, err
 	}
 	defer func() {
@@ -286,71 +242,33 @@ func (s scanJobStatus) failureReason() string {
 	return "job reported failed status"
 }
 
-// createScanJob crafts a job Manifest and calls kube-api to create the job in the cluster
-// The job downloads the VEX file and executes trivy to scan
-func createScanJob(clientset kubernetes.Interface, namespace string, jobName string, scannerImage string, targetImage string) error {
-	// It first adds the script to download the VEX file
-	scriptLines := append([]string{}, trivyVEXDownloadScriptLines...)
-	scriptLines = append(scriptLines, fmt.Sprintf("trivy image --quiet --format json --severity CRITICAL,HIGH --vex %q %q", clusterVEXFilePath, targetImage))
-	script := strings.Join(scriptLines, "\n")
-	backoffLimit := int32(0)
-
-	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName,
-			Namespace: namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/name": "rke2-patcher",
-				"rke2-patcher.cve":       "true",
-			},
-		},
-		Spec: batchv1.JobSpec{
-			BackoffLimit: &backoffLimit,
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app.kubernetes.io/name": "rke2-patcher",
-						"rke2-patcher.cve":       "true",
-					},
-				},
-				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
-					Containers: []corev1.Container{
-						{
-							Name:            "scanner",
-							Image:           scannerImage,
-							ImagePullPolicy: corev1.PullIfNotPresent,
-							Command:         []string{"sh"},
-							Args:            []string{"-c", script},
-						},
-					},
-				},
-			},
-		},
+// createScanJob crafts a job Manifest and calls kube-api to create the job in the cluster.
+// The job downloads the VEX file and executes trivy to scan one or more target images.
+func createScanJob(clientset kubernetes.Interface, namespace string, jobName string, scannerImage string, targetImages []string) error {
+	if len(targetImages) == 0 {
+		return fmt.Errorf("no target images provided")
 	}
 
-	if _, err := clientset.BatchV1().Jobs(namespace).Create(context.Background(), job, metav1.CreateOptions{}); err != nil {
-		return fmt.Errorf("failed to create scan job %s/%s: %w", namespace, jobName, err)
+	scriptLines := append([]string{}, trivyVEXDownloadScriptLines...)
+	containerArgs := []string{"-c"}
+
+	if len(targetImages) == 1 {
+		scriptLines = append(scriptLines, fmt.Sprintf("trivy image --quiet --format json --severity CRITICAL,HIGH --vex %q %q", clusterVEXFilePath, targetImages[0]))
+		containerArgs = append(containerArgs, strings.Join(scriptLines, "\n"))
+	} else {
+		scriptLines = append(scriptLines, []string{
+			"for image in \"$@\"; do",
+			"  echo \"" + batchScanBeginPrefix + "${image}\"",
+			"  trivy image --quiet --format json --severity CRITICAL,HIGH --vex \"${VEX_FILE}\" \"${image}\" 2>&1",
+			"  rc=$?",
+			"  echo \"" + batchScanRCPrefix + "${image}__${rc}\"",
+			"  echo \"" + batchScanEndPrefix + "${image}\"",
+			"done",
+		}...)
+		containerArgs = append(containerArgs, strings.Join(scriptLines, "\n"), "--")
+		containerArgs = append(containerArgs, targetImages...)
 	}
 
-	return nil
-}
-
-func createBatchScanJob(clientset kubernetes.Interface, namespace string, jobName string, scannerImage string, targetImages []string) error {
-	scriptLines := append([]string{}, trivyVEXDownloadScriptLines...)
-	scriptLines = append(scriptLines, []string{
-		"for image in \"$@\"; do",
-		"  echo \"" + batchScanBeginPrefix + "${image}\"",
-		"  trivy image --quiet --format json --severity CRITICAL,HIGH --vex \"${VEX_FILE}\" \"${image}\" 2>&1",
-		"  rc=$?",
-		"  echo \"" + batchScanRCPrefix + "${image}__${rc}\"",
-		"  echo \"" + batchScanEndPrefix + "${image}\"",
-		"done",
-	}...)
-	script := strings.Join(scriptLines, "\n")
-
-	containerArgs := []string{"-c", script, "--"}
-	containerArgs = append(containerArgs, targetImages...)
 	backoffLimit := int32(0)
 
 	job := &batchv1.Job{
@@ -388,7 +306,7 @@ func createBatchScanJob(clientset kubernetes.Interface, namespace string, jobNam
 	}
 
 	if _, err := clientset.BatchV1().Jobs(namespace).Create(context.Background(), job, metav1.CreateOptions{}); err != nil {
-		return fmt.Errorf("failed to create batch scan job %s/%s: %w", namespace, jobName, err)
+		return fmt.Errorf("failed to create scan job %s/%s: %w", namespace, jobName, err)
 	}
 
 	return nil
