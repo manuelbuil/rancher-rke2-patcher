@@ -13,6 +13,8 @@ import (
 	"github.com/manuelbuil/PoCs/2026/rke2-patcher/internal/registry"
 )
 
+var promptYesNoFn = promptYesNo
+
 // runCVE lists the CVEs for the currently running image of a component
 func runCVE(component components.Component) error {
 	runningImages, err := kube.ListRunningImages(component.Workload, component.Repository)
@@ -161,12 +163,12 @@ func runImagePatch(component components.Component, options imagePatchOptions) er
 	runningImage := runningImages[0].Image
 	currentImageName, currentImageTag := kube.SplitImage(runningImage)
 
-	targetTagName, err := resolvePatchTargetTag(component.Repository, currentImageTag, options.Revert)
+	targetTagName, err := resolvePatchTargetTag(component.Repository, currentImageTag)
 	if err != nil {
 		return err
 	}
 
-	patchDecision, err := evaluatePatchLimit(component.Name, currentImageTag, targetTagName, options.Revert)
+	patchDecision, err := evaluatePatchLimit(component.Name, currentImageTag, targetTagName)
 	if err != nil {
 		return err
 	}
@@ -201,7 +203,7 @@ func runImagePatch(component components.Component, options imagePatchOptions) er
 			fmt.Printf("- %s/%s\n", conflict.Namespace, conflict.Name)
 		}
 
-		firstConfirm, err := promptYesNo("Merging generated and existing HelmChartConfig values will be tried. Continue? [Yes/No]: ")
+		firstConfirm, err := promptYesNoFn("Merging generated and existing HelmChartConfig values will be tried. Continue? [Yes/No]: ")
 		if err != nil {
 			return err
 		}
@@ -222,7 +224,7 @@ func runImagePatch(component components.Component, options imagePatchOptions) er
 		contentToWrite = mergedContent
 
 		printPatchPreview(component.Name, runningImage, currentImageTag, targetTagName, filePath, contentToWrite)
-		secondConfirm, err := promptYesNo("Apply this HelmChartConfig now? [Yes/No]: ")
+		secondConfirm, err := promptYesNoFn("Apply this HelmChartConfig now? [Yes/No]: ")
 		if err != nil {
 			return err
 		}
@@ -270,19 +272,43 @@ func runReconcile(component components.Component) error {
 	}
 
 	staleKeys := make([]string, 0)
+	currentKeys := make([]string, 0)
 	for key, entry := range state.Entries {
-		if strings.TrimSpace(entry.ClusterVersion) == currentVersion {
+		if !strings.EqualFold(strings.TrimSpace(entry.Component), strings.TrimSpace(component.Name)) {
 			continue
 		}
-		if !strings.EqualFold(strings.TrimSpace(entry.Component), strings.TrimSpace(component.Name)) {
+		if strings.TrimSpace(entry.ClusterVersion) == currentVersion {
+			currentKeys = append(currentKeys, key)
 			continue
 		}
 		staleKeys = append(staleKeys, key)
 	}
 
 	if len(staleKeys) == 0 {
-		printReconcileAlreadyCurrent(components.CLIName(component.Name))
-		return nil
+		componentName := components.CLIName(component.Name)
+		if len(currentKeys) == 0 {
+			printReconcileAlreadyCurrent(componentName)
+			return nil
+		}
+
+		prompt := fmt.Sprintf("reconcile: component %s: no stale patches found; already up to date. Would you like to revert the patch? [Yes/No]: ", componentName)
+		approved, err := promptYesNoFn(prompt)
+		if err != nil {
+			return err
+		}
+		if !approved {
+			return nil
+		}
+
+		for _, key := range currentKeys {
+			entry := state.Entries[key]
+			if err := reconcileEntry(entry); err != nil {
+				return fmt.Errorf("failed to reconcile component %q: %w", entry.Component, err)
+			}
+			printReconcileApplied(entry)
+		}
+
+		return removeEntriesFromState(namespace, currentKeys)
 	}
 
 	for _, key := range staleKeys {

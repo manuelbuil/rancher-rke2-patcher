@@ -7,7 +7,6 @@ type imageListOptions struct {
 
 type imagePatchOptions struct {
 	DryRun bool
-	Revert bool
 }
 
 type cveListEntry struct {
@@ -29,7 +28,7 @@ type patchLimitEntry struct {
 }
 
 type patchLimitDecision struct {
-	ShouldPersist  bool // when reverting we don't persist it
+	ShouldPersist  bool
 	StateNamespace string
 	EntryKey       string
 	Entry          patchLimitEntry

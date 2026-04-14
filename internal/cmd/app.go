@@ -66,11 +66,10 @@ func BuildCLIApp() *cli.App {
 			},
 			{
 				Name:      "image-patch",
-				Usage:     "Patch the component image to latest or previous eligible tag",
+				Usage:     "Patch the component image to the latest eligible tag",
 				ArgsUsage: "<component>",
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "dry-run", Usage: "Print generated HelmChartConfig without writing"},
-					&cli.BoolFlag{Name: "revert", Usage: "Revert to the previous eligible tag"},
 				},
 				Action: runImagePatchCommand,
 			},
@@ -178,7 +177,6 @@ func runImagePatchCommand(ctx *cli.Context) error {
 
 	options := imagePatchOptions{
 		DryRun: ctx.Bool("dry-run"),
-		Revert: ctx.Bool("revert"),
 	}
 
 	return runImagePatch(component, options)
@@ -204,7 +202,7 @@ func printUsage() {
 	fmt.Println("  rke2-patcher config")
 	fmt.Println("  rke2-patcher image-cve <component>")
 	fmt.Println("  rke2-patcher image-list <component> [--with-cves] [--verbose]")
-	fmt.Println("  rke2-patcher image-patch <component> [--dry-run] [--revert]")
+	fmt.Println("  rke2-patcher image-patch <component> [--dry-run]")
 	fmt.Println("  rke2-patcher reconcile <component>")
 	fmt.Println()
 	fmt.Printf("Supported components: %s\n", strings.Join(components.Supported(), ", "))

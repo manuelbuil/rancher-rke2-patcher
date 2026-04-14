@@ -21,7 +21,7 @@ rke2-patcher --version
 rke2-patcher config
 rke2-patcher image-cve <component>
 rke2-patcher image-list <component> [--with-cves] [--verbose]
-rke2-patcher image-patch <component> [--dry-run] [--revert]
+rke2-patcher image-patch <component> [--dry-run]
 rke2-patcher reconcile <component>
 ```
 
@@ -97,21 +97,13 @@ rke2-patcher image-patch rke2-traefik
 rke2-patcher image-patch rke2-traefik --dry-run
 ```
 
-```bash
-rke2-patcher image-patch rke2-traefik --revert
-```
-
 - Detects the current running image repository in-cluster.
 - Picks the next newer tag from `registry.rancher.com` and writes a `HelmChartConfig` manifest with that tag.
 - With `--dry-run`, prints the exact `HelmChartConfig` that would be written and does not write any file.
-- With `--revert`, moves one image back (to the previous/older tag).
 - Refuses to patch when current tag is already the newest available tag.
 - Refuses to patch when the target tag would move to a newer minor release.
 - Refuses to patch when the same component was already patched forward once for the current detected RKE2 version.
 - Refuses to patch when any stale patch state from a different RKE2 version still exists. In that case, run `rke2-patcher reconcile <component>` for each previously patched component before patching again.
-- Refuses to revert when current tag is already the oldest available tag in the observed list.
-- Refuses to revert when there is no recorded baseline for the component on the current detected RKE2 version.
-- Refuses to revert when the target tag is older than the recorded release baseline for the component on the current detected RKE2 version.
 - Refuses to write if the target manifests directory does not exist and suggests setting `RKE2_PATCHER_DATA_DIR`.
 - If one or more `HelmChartConfig` objects already exist in the cluster for the same chart name and namespace, asks for confirmation before attempting a merge.
 - If merge is approved, prints the merged output in dry-run format and asks for a second confirmation before writing.

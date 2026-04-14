@@ -15,7 +15,7 @@ type comparableTag struct {
 	Minor  int
 	Patch  int
 	Build  int
-	Flavor string  //hardened or empty
+	Flavor string //hardened or empty
 }
 
 // orderedComparableTags takes raw registry tags, parses and sorts them from newest to oldest based on comparableTag fields
@@ -184,20 +184,6 @@ func isNewerMinorRelease(current comparableTag, target comparableTag) bool {
 	return target.Minor > current.Minor
 }
 
-func isTagOlderThan(tagName string, baselineTag string) (bool, error) {
-	tagComparable, tagParseOK := parseComparableTag(tagName)
-	if !tagParseOK {
-		return false, fmt.Errorf("tag %q cannot be compared", tagName)
-	}
-
-	baselineComparable, baselineParseOK := parseComparableTag(baselineTag)
-	if !baselineParseOK {
-		return false, fmt.Errorf("baseline tag %q cannot be compared", baselineTag)
-	}
-
-	return compareComparableTags(tagComparable, baselineComparable) < 0, nil
-}
-
 // selectTagsForCVEListing prepares a curated list. Only one previous and all the new tags but ordered
 func selectTagsForCVEListing(tags []registry.Tag, currentTag string) ([]string, string) {
 	orderedTags := orderedComparableTags(tags)
@@ -237,7 +223,7 @@ func selectTagsForCVEListing(tags []registry.Tag, currentTag string) ([]string, 
 }
 
 // resolvePatchTargetTag finds the target tag to patch to after going through the different limitations checks
-func resolvePatchTargetTag(repository string, currentTag string, revert bool) (string, error) {
+func resolvePatchTargetTag(repository string, currentTag string) (string, error) {
 	tags, err := registry.ListTags(repository, 200)
 	if err != nil {
 		return "", fmt.Errorf("failed to list tags: %w", err)
@@ -256,14 +242,6 @@ func resolvePatchTargetTag(repository string, currentTag string, revert bool) (s
 
 	if currentIndex == -1 {
 		return "", fmt.Errorf("refusing to patch: current tag %q not found in latest observed tags", currentTag)
-	}
-
-	if revert {
-		targetIndex := currentIndex + 1
-		if targetIndex >= len(orderedTags) {
-			return "", fmt.Errorf("refusing to revert: current tag %q is already the oldest available in the observed tag list", currentTag)
-		}
-		return orderedTags[targetIndex], nil
 	}
 
 	targetIndex := currentIndex - 1

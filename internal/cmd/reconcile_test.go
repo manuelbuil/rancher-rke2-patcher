@@ -36,7 +36,7 @@ func TestEvaluatePatchLimit_BlocksWhenStaleVersionExists(t *testing.T) {
 	}
 	t.Cleanup(func() { loadPatchLimitStateFromBackend = originalLoad })
 
-	_, err := evaluatePatchLimit("traefik", "v3.6.9", "v3.6.10", false)
+	_, err := evaluatePatchLimit("traefik", "v3.6.9", "v3.6.10")
 	if err == nil {
 		t.Fatalf("expected error when stale version entry exists, got nil")
 	}
@@ -79,7 +79,7 @@ func TestEvaluatePatchLimit_AllowsWhenAllEntriesMatchCurrentVersion(t *testing.T
 	}
 	t.Cleanup(func() { loadPatchLimitStateFromBackend = originalLoad })
 
-	decision, err := evaluatePatchLimit("traefik", "v3.6.9", "v3.6.10", false)
+	decision, err := evaluatePatchLimit("traefik", "v3.6.9", "v3.6.10")
 	if err != nil {
 		t.Fatalf("expected patch to be allowed when no stale-version entries exist, got: %v", err)
 	}
@@ -324,5 +324,176 @@ func TestRunReconcileCommand_RequiresComponent(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "component is required") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunReconcile_PromptsAndRevertsCurrentVersionPatchWhenApproved(t *testing.T) {
+	useInMemoryPatchLimitStateBackend(t)
+
+	originalResolver := clusterVersionResolver
+	clusterVersionResolver = func() (string, error) {
+		return "v1.35.2+rke2r1", nil
+	}
+	t.Cleanup(func() {
+		clusterVersionResolver = originalResolver
+	})
+
+	originalPrompt := promptYesNoFn
+	promptCalled := false
+	promptYesNoFn = func(prompt string) (bool, error) {
+		promptCalled = true
+		if !strings.Contains(prompt, "Would you like to revert the patch?") {
+			t.Fatalf("unexpected prompt: %q", prompt)
+		}
+		return true, nil
+	}
+	t.Cleanup(func() {
+		promptYesNoFn = originalPrompt
+	})
+
+	tempDir := t.TempDir()
+	traefikFilePath := filepath.Join(tempDir, "rke2-traefik-config-rke2-patcher.yaml")
+
+	traefikContent := `apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    image:
+      repository: rancher/hardened-traefik
+      tag: v3.4.0
+    service:
+      type: ClusterIP
+`
+	if err := os.WriteFile(traefikFilePath, []byte(traefikContent), 0644); err != nil {
+		t.Fatalf("failed to write traefik file: %v", err)
+	}
+
+	traefikComponent, err := components.Resolve("traefik")
+	if err != nil {
+		t.Fatalf("failed to resolve traefik component: %v", err)
+	}
+
+	if err := persistPatchLimitDecision(patchLimitDecision{
+		ShouldPersist:  true,
+		StateNamespace: patchLimitStateNamespace(),
+		EntryKey:       patchLimitEntryKey("v1.35.2+rke2r1", traefikComponent.Name),
+		Entry: patchLimitEntry{
+			Component:              traefikComponent.Name,
+			ClusterVersion:         "v1.35.2+rke2r1",
+			BaselineTag:            "v3.3.0",
+			PatchedToTag:           "v3.4.0",
+			FilePath:               traefikFilePath,
+			GeneratedValuesContent: "image:\n  repository: rancher/hardened-traefik\n  tag: v3.4.0",
+		},
+	}); err != nil {
+		t.Fatalf("failed to persist traefik state: %v", err)
+	}
+
+	if err := runReconcile(traefikComponent); err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+
+	if !promptCalled {
+		t.Fatalf("expected revert prompt to be shown")
+	}
+
+	updatedTraefik, err := os.ReadFile(traefikFilePath)
+	if err != nil {
+		t.Fatalf("failed to read traefik file: %v", err)
+	}
+	if strings.Contains(string(updatedTraefik), "repository: rancher/hardened-traefik") || strings.Contains(string(updatedTraefik), "tag: v3.4.0") {
+		t.Fatalf("expected traefik patcher keys to be removed, got:\n%s", string(updatedTraefik))
+	}
+
+	state, _, err := loadPatchLimitStateFromBackend(patchLimitStateNamespace())
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+	if _, found := state.Entries[patchLimitEntryKey("v1.35.2+rke2r1", traefikComponent.Name)]; found {
+		t.Fatalf("expected current-version traefik state entry to be removed after approved revert")
+	}
+}
+
+func TestRunReconcile_PromptsAndKeepsCurrentVersionPatchWhenRejected(t *testing.T) {
+	useInMemoryPatchLimitStateBackend(t)
+
+	originalResolver := clusterVersionResolver
+	clusterVersionResolver = func() (string, error) {
+		return "v1.35.2+rke2r1", nil
+	}
+	t.Cleanup(func() {
+		clusterVersionResolver = originalResolver
+	})
+
+	originalPrompt := promptYesNoFn
+	promptYesNoFn = func(prompt string) (bool, error) {
+		return false, nil
+	}
+	t.Cleanup(func() {
+		promptYesNoFn = originalPrompt
+	})
+
+	tempDir := t.TempDir()
+	traefikFilePath := filepath.Join(tempDir, "rke2-traefik-config-rke2-patcher.yaml")
+
+	traefikContent := `apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    image:
+      repository: rancher/hardened-traefik
+      tag: v3.4.0
+    service:
+      type: ClusterIP
+`
+	if err := os.WriteFile(traefikFilePath, []byte(traefikContent), 0644); err != nil {
+		t.Fatalf("failed to write traefik file: %v", err)
+	}
+
+	traefikComponent, err := components.Resolve("traefik")
+	if err != nil {
+		t.Fatalf("failed to resolve traefik component: %v", err)
+	}
+
+	if err := persistPatchLimitDecision(patchLimitDecision{
+		ShouldPersist:  true,
+		StateNamespace: patchLimitStateNamespace(),
+		EntryKey:       patchLimitEntryKey("v1.35.2+rke2r1", traefikComponent.Name),
+		Entry: patchLimitEntry{
+			Component:              traefikComponent.Name,
+			ClusterVersion:         "v1.35.2+rke2r1",
+			BaselineTag:            "v3.3.0",
+			PatchedToTag:           "v3.4.0",
+			FilePath:               traefikFilePath,
+			GeneratedValuesContent: "image:\n  repository: rancher/hardened-traefik\n  tag: v3.4.0",
+		},
+	}); err != nil {
+		t.Fatalf("failed to persist traefik state: %v", err)
+	}
+
+	if err := runReconcile(traefikComponent); err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+
+	updatedTraefik, err := os.ReadFile(traefikFilePath)
+	if err != nil {
+		t.Fatalf("failed to read traefik file: %v", err)
+	}
+	if !strings.Contains(string(updatedTraefik), "repository: rancher/hardened-traefik") || !strings.Contains(string(updatedTraefik), "tag: v3.4.0") {
+		t.Fatalf("expected traefik file to stay unchanged, got:\n%s", string(updatedTraefik))
+	}
+
+	state, _, err := loadPatchLimitStateFromBackend(patchLimitStateNamespace())
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+	if _, found := state.Entries[patchLimitEntryKey("v1.35.2+rke2r1", traefikComponent.Name)]; !found {
+		t.Fatalf("expected current-version traefik state entry to remain after rejecting revert")
 	}
 }
