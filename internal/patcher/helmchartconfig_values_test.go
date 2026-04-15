@@ -42,7 +42,7 @@ func TestRenderValuesContent_CalicoOperatorRegistryFromEnv(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(registryEnv, tt.registryEnvValue)
 
-			values := renderValuesContent("calico-operator", "rke2-calico", tt.imageName, "v3.31.0")
+			values := renderValuesContent("rke2-calico-operator", "rke2-calico", tt.imageName, "v3.31.0")
 
 			expectedRegistryLine := "registry: " + tt.expectedRegistry
 			if !strings.Contains(values, expectedRegistryLine) {
@@ -58,12 +58,12 @@ func TestRenderValuesContent_CalicoOperatorRegistryFromEnv(t *testing.T) {
 }
 
 func TestRenderValuesContent_AddsPatcherCommentToImageAndRepositoryLines(t *testing.T) {
-	valuesForCalico := renderValuesContent("calico-operator", "rke2-calico", "docker.io/rancher/mirrored-calico-operator", "v3.31.0")
+	valuesForCalico := renderValuesContent("rke2-calico-operator", "rke2-calico", "docker.io/rancher/mirrored-calico-operator", "v3.31.0")
 	if !strings.Contains(valuesForCalico, "image: rancher/mirrored-calico-operator # change made by rke2-patcher") {
 		t.Fatalf("expected calico image line to include patcher comment, got:\n%s", valuesForCalico)
 	}
 
-	valuesForIngress := renderValuesContent("ingress-nginx", "rke2-ingress-nginx", "rancher/hardened-ingress-nginx", "v1.0.0")
+	valuesForIngress := renderValuesContent("rke2-ingress-nginx", "rke2-ingress-nginx", "rancher/hardened-ingress-nginx", "v1.0.0")
 	if !strings.Contains(valuesForIngress, "repository: rancher/hardened-ingress-nginx # change made by rke2-patcher") {
 		t.Fatalf("expected ingress repository line to include patcher comment, got:\n%s", valuesForIngress)
 	}
@@ -81,11 +81,11 @@ func TestRenderValuesContent_AllGeneratedLinesHavePatcherComment(t *testing.T) {
 		imageTag      string
 	}{
 		{name: "default", componentName: "rke2-traefik", chartName: "rke2-traefik", imageName: "rancher/hardened-traefik", imageTag: "v3.6.9"},
-		{name: "ingress nginx", componentName: "ingress-nginx", chartName: "rke2-ingress-nginx", imageName: "rancher/hardened-ingress-nginx", imageTag: "v1.0.0"},
-		{name: "calico operator", componentName: "calico-operator", chartName: "rke2-calico", imageName: "docker.io/rancher/mirrored-calico-operator", imageTag: "v3.31.0"},
-		{name: "cilium operator", componentName: "cilium-operator", chartName: "rke2-cilium", imageName: "rancher/mirrored-cilium-operator-generic", imageTag: "v1.17.5"},
-		{name: "canal calico", componentName: "canal-calico", chartName: "rke2-canal", imageName: "rancher/hardened-calico", imageTag: "v1.0.0"},
-		{name: "canal flannel", componentName: "canal-flannel", chartName: "rke2-canal", imageName: "rancher/hardened-flannel", imageTag: "v1.0.0"},
+		{name: "ingress nginx", componentName: "rke2-ingress-nginx", chartName: "rke2-ingress-nginx", imageName: "rancher/hardened-ingress-nginx", imageTag: "v1.0.0"},
+		{name: "calico operator", componentName: "rke2-calico-operator", chartName: "rke2-calico", imageName: "docker.io/rancher/mirrored-calico-operator", imageTag: "v3.31.0"},
+		{name: "cilium operator", componentName: "rke2-cilium-operator", chartName: "rke2-cilium", imageName: "rancher/mirrored-cilium-operator-generic", imageTag: "v1.17.5"},
+		{name: "canal calico", componentName: "rke2-canal-calico", chartName: "rke2-canal", imageName: "rancher/hardened-calico", imageTag: "v1.0.0"},
+		{name: "canal flannel", componentName: "rke2-canal-flannel", chartName: "rke2-canal", imageName: "rancher/hardened-flannel", imageTag: "v1.0.0"},
 	}
 
 	for _, tt := range tests {
@@ -113,30 +113,25 @@ func TestBuildHelmChartConfigWithDataDir_GeneratedContentParsesForPatchedCompone
 		imageTag      string
 	}{
 		{name: "default", componentName: "rke2-traefik", chartName: "rke2-traefik", imageName: "rancher/hardened-traefik", imageTag: "v3.6.9"},
-		{name: "ingress nginx", componentName: "ingress-nginx", chartName: "rke2-ingress-nginx", imageName: "rancher/hardened-ingress-nginx", imageTag: "v1.0.0"},
-		{name: "calico operator", componentName: "calico-operator", chartName: "rke2-calico", imageName: "docker.io/rancher/mirrored-calico-operator", imageTag: "v3.31.0"},
-		{name: "canal calico", componentName: "canal-calico", chartName: "rke2-canal", imageName: "rancher/hardened-calico", imageTag: "v1.0.0"},
-		{name: "canal flannel", componentName: "canal-flannel", chartName: "rke2-canal", imageName: "rancher/hardened-flannel", imageTag: "v1.0.0"},
+		{name: "ingress nginx", componentName: "rke2-ingress-nginx", chartName: "rke2-ingress-nginx", imageName: "rancher/hardened-ingress-nginx", imageTag: "v1.0.0"},
+		{name: "calico operator", componentName: "rke2-calico-operator", chartName: "rke2-calico", imageName: "docker.io/rancher/mirrored-calico-operator", imageTag: "v3.31.0"},
+		{name: "canal calico", componentName: "rke2-canal-calico", chartName: "rke2-canal", imageName: "rancher/hardened-calico", imageTag: "v1.0.0"},
+		{name: "canal flannel", componentName: "rke2-canal-flannel", chartName: "rke2-canal", imageName: "rancher/hardened-flannel", imageTag: "v1.0.0"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, content := BuildHelmChartConfigWithDataDir(tt.componentName, tt.chartName, tt.imageName, tt.imageTag, "/tmp")
-
-			valuesContent, err := ExtractValuesContent(content)
-			if err != nil {
-				t.Fatalf("expected generated HelmChartConfig to parse, got error: %v\ncontent:\n%s", err, content)
-			}
+			_, _, valuesContent := BuildHelmChartConfig(tt.componentName, tt.chartName, tt.imageName, tt.imageTag)
 
 			if strings.TrimSpace(valuesContent) == "" {
-				t.Fatalf("expected non-empty valuesContent, got empty content:\n%s", content)
+				t.Fatal("expected non-empty valuesContent, got empty content")
 			}
 		})
 	}
 }
 
 func TestRenderValuesContent_CanalCalicoPatchesFourCalicoImageKeys(t *testing.T) {
-	values := renderValuesContent("canal-calico", "rke2-canal", "rancher/hardened-calico", "v3.31.4")
+	values := renderValuesContent("rke2-canal-calico", "rke2-canal", "rancher/hardened-calico", "v3.31.4")
 
 	if !strings.Contains(values, "cniImage:") || !strings.Contains(values, "nodeImage:") || !strings.Contains(values, "flexvolImage:") || !strings.Contains(values, "kubeControllerImage:") {
 		t.Fatalf("expected canal-calico values to patch cni/node/flexvol/kubeController images, got:\n%s", values)

@@ -7,7 +7,7 @@ import (
 )
 
 type Component struct {
-	Key                 string
+	Name                string
 	Repository          string
 	HelmChartConfigName string
 	Workload            WorkloadRef
@@ -132,13 +132,13 @@ var registry = map[string]Component{
 
 // Resolves the component struct of the chosen component
 func Resolve(name string) (Component, error) {
-	key, found := canonicalKey(name)
-	component, found := registry[key]
+	canonicalName, found := canonicalName(name)
+	component, found := registry[canonicalName]
 	if !found {
 		return Component{}, fmt.Errorf("unsupported component %q", name)
 	}
 
-	component.Key = key
+	component.Name = canonicalName
 
 	return component, nil
 }
@@ -159,8 +159,8 @@ func CLIName(name string) string {
 		return ""
 	}
 
-	if key, found := canonicalKey(trimmed); found {
-		return key
+	if canonicalName, found := canonicalName(trimmed); found {
+		return canonicalName
 	}
 
 	return trimmed
@@ -170,15 +170,15 @@ func SameComponent(a string, b string) bool {
 	return strings.EqualFold(CLIName(a), CLIName(b))
 }
 
-func canonicalKey(name string) (string, bool) {
-	key := strings.ToLower(strings.TrimSpace(name))
-	if key == "" {
+func canonicalName(name string) (string, bool) {
+	normalizedName := strings.ToLower(strings.TrimSpace(name))
+	if normalizedName == "" {
 		return "", false
 	}
 
-	if _, found := registry[key]; found {
-		return key, true
+	if _, found := registry[normalizedName]; found {
+		return normalizedName, true
 	}
 
-	return key, false
+	return normalizedName, false
 }

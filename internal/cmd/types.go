@@ -14,11 +14,11 @@ type cveListEntry struct {
 	Error string
 }
 
-type patchLimitState struct {
-	Entries map[string]patchLimitEntry `json:"entries"`
+type patchState struct {
+	Entries map[string]patchEntry `json:"entries"`
 }
 
-type patchLimitEntry struct {
+type patchEntry struct {
 	Component              string `json:"component"`
 	ClusterVersion         string `json:"clusterVersion"`
 	BaselineTag            string `json:"baselineTag"`
@@ -27,9 +27,8 @@ type patchLimitEntry struct {
 	GeneratedValuesContent string `json:"generatedValuesContent,omitempty"`
 }
 
-type patchLimitDecision struct {
-	ShouldPersist  bool
+type patchStateWrite struct {
 	StateNamespace string
-	EntryKey       string
-	Entry          patchLimitEntry
+	EntryName      string
+	Entry          patchEntry
 }

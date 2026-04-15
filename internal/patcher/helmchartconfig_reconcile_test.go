@@ -117,30 +117,3 @@ spec:
 		t.Fatalf("expected patcher-managed keys to be removed, got:\n%s", result)
 	}
 }
-
-func TestExtractValuesContent_ExtractsValuesFromHCCFile(t *testing.T) {
-	fileContent := `apiVersion: helm.cattle.io/v1
-kind: HelmChartConfig
-metadata:
-  name: rke2-traefik
-  namespace: kube-system
-spec:
-  valuesContent: |-
-    image:
-      repository: rancher/hardened-traefik
-      tag: v3.4.0
-`
-
-	values, err := ExtractValuesContent(fileContent)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !strings.Contains(values, "repository: rancher/hardened-traefik") {
-		t.Fatalf("expected repository in extracted values, got: %q", values)
-	}
-
-	if !strings.Contains(values, "tag: v3.4.0") {
-		t.Fatalf("expected tag in extracted values, got: %q", values)
-	}
-}

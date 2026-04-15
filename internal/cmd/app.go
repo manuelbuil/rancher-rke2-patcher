@@ -102,7 +102,7 @@ func BuildCLIApp() *cli.App {
 	return app
 }
 
-// resolveComponentForCommand extracts the component from the CLI arg
+// resolveComponentForCommand extracts the component from the CLI arg and returns a component struct
 func resolveComponentForCommand(ctx *cli.Context) (components.Component, error) {
 	if ctx.Args().Len() == 0 {
 		return components.Component{}, cli.Exit("component is required", usageExitCode)
@@ -167,6 +167,7 @@ func runImageListCommand(ctx *cli.Context) error {
 	return runImageList(component, options)
 }
 
+// runImagePatchCommand handles the "image-patch" CLI command
 func runImagePatchCommand(ctx *cli.Context) error {
 	if err := validateNoExtraArgs(ctx); err != nil {
 		return err

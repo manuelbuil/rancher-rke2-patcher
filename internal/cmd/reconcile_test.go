@@ -11,8 +11,8 @@ import (
 	cli "github.com/urfave/cli/v2"
 )
 
-func TestEvaluatePatchLimit_BlocksWhenStaleVersionExists(t *testing.T) {
-	t.Setenv(patchLimitStateNamespaceEnv, "")
+func TestEvaluatePatchEligibility_BlocksWhenStaleVersionExists(t *testing.T) {
+	t.Setenv(patchStateNamespaceEnv, "")
 
 	originalResolver := clusterVersionResolver
 	clusterVersionResolver = func() (string, error) {
@@ -20,10 +20,10 @@ func TestEvaluatePatchLimit_BlocksWhenStaleVersionExists(t *testing.T) {
 	}
 	t.Cleanup(func() { clusterVersionResolver = originalResolver })
 
-	originalLoad := loadPatchLimitStateFromBackend
-	loadPatchLimitStateFromBackend = func(namespace string) (patchLimitState, string, error) {
-		state := patchLimitState{
-			Entries: map[string]patchLimitEntry{
+	originalLoad := loadPatchStateFromBackend
+	loadPatchStateFromBackend = func(namespace string) (patchState, string, error) {
+		state := patchState{
+			Entries: map[string]patchEntry{
 				"v1.35.1+rke2r1|rke2-traefik": {
 					Component:      "rke2-traefik",
 					ClusterVersion: "v1.35.1+rke2r1",
@@ -34,9 +34,9 @@ func TestEvaluatePatchLimit_BlocksWhenStaleVersionExists(t *testing.T) {
 		}
 		return state, "1", nil
 	}
-	t.Cleanup(func() { loadPatchLimitStateFromBackend = originalLoad })
+	t.Cleanup(func() { loadPatchStateFromBackend = originalLoad })
 
-	_, err := evaluatePatchLimit("traefik", "v3.6.9", "v3.6.10")
+	_, err := generateStateWrite("traefik", "v3.6.9", "v3.6.10", "", "")
 	if err == nil {
 		t.Fatalf("expected error when stale version entry exists, got nil")
 	}
@@ -54,8 +54,8 @@ func TestEvaluatePatchLimit_BlocksWhenStaleVersionExists(t *testing.T) {
 	}
 }
 
-func TestEvaluatePatchLimit_AllowsWhenAllEntriesMatchCurrentVersion(t *testing.T) {
-	t.Setenv(patchLimitStateNamespaceEnv, "")
+func TestEvaluatePatchEligibility_AllowsWhenAllEntriesMatchCurrentVersion(t *testing.T) {
+	t.Setenv(patchStateNamespaceEnv, "")
 
 	originalResolver := clusterVersionResolver
 	clusterVersionResolver = func() (string, error) {
@@ -63,10 +63,10 @@ func TestEvaluatePatchLimit_AllowsWhenAllEntriesMatchCurrentVersion(t *testing.T
 	}
 	t.Cleanup(func() { clusterVersionResolver = originalResolver })
 
-	originalLoad := loadPatchLimitStateFromBackend
-	loadPatchLimitStateFromBackend = func(namespace string) (patchLimitState, string, error) {
-		state := patchLimitState{
-			Entries: map[string]patchLimitEntry{
+	originalLoad := loadPatchStateFromBackend
+	loadPatchStateFromBackend = func(namespace string) (patchState, string, error) {
+		state := patchState{
+			Entries: map[string]patchEntry{
 				"v1.35.2+rke2r1|flannel": {
 					Component:      "flannel",
 					ClusterVersion: "v1.35.2+rke2r1",
@@ -77,21 +77,21 @@ func TestEvaluatePatchLimit_AllowsWhenAllEntriesMatchCurrentVersion(t *testing.T
 		}
 		return state, "1", nil
 	}
-	t.Cleanup(func() { loadPatchLimitStateFromBackend = originalLoad })
+	t.Cleanup(func() { loadPatchStateFromBackend = originalLoad })
 
-	decision, err := evaluatePatchLimit("traefik", "v3.6.9", "v3.6.10")
+	decision, err := generateStateWrite("traefik", "v3.6.9", "v3.6.10", "", "")
 	if err != nil {
 		t.Fatalf("expected patch to be allowed when no stale-version entries exist, got: %v", err)
 	}
 
-	if !decision.ShouldPersist {
-		t.Fatalf("expected decision to require persistence")
+	if decision.EntryName == "" {
+		t.Fatalf("expected decision to include entry key")
 	}
 }
 
 func TestStaleEntryKeys_ReturnsOnlyDifferentVersionKeys(t *testing.T) {
-	state := patchLimitState{
-		Entries: map[string]patchLimitEntry{
+	state := patchState{
+		Entries: map[string]patchEntry{
 			"v1.35.1+rke2r1|traefik": {ClusterVersion: "v1.35.1+rke2r1"},
 			"v1.35.2+rke2r1|flannel": {ClusterVersion: "v1.35.2+rke2r1"},
 			"v1.35.1+rke2r1|calico":  {ClusterVersion: "v1.35.1+rke2r1"},
@@ -132,7 +132,7 @@ spec:
 		t.Fatalf("failed to write temp file: %v", err)
 	}
 
-	entry := patchLimitEntry{
+	entry := patchEntry{
 		Component:              "traefik",
 		ClusterVersion:         "v1.35.1+rke2r1",
 		BaselineTag:            "v3.3.0",
@@ -161,7 +161,7 @@ spec:
 }
 
 func TestReconcileEntry_NoOpForLegacyEntryWithoutFilePath(t *testing.T) {
-	entry := patchLimitEntry{
+	entry := patchEntry{
 		Component:      "traefik",
 		ClusterVersion: "v1.35.1+rke2r1",
 		FilePath:       "",
@@ -173,7 +173,7 @@ func TestReconcileEntry_NoOpForLegacyEntryWithoutFilePath(t *testing.T) {
 }
 
 func TestReconcileEntry_NoOpWhenFileDoesNotExist(t *testing.T) {
-	entry := patchLimitEntry{
+	entry := patchEntry{
 		Component:              "traefik",
 		ClusterVersion:         "v1.35.1+rke2r1",
 		FilePath:               "/nonexistent/path/traefik-config-rke2-patcher.yaml",
@@ -186,7 +186,7 @@ func TestReconcileEntry_NoOpWhenFileDoesNotExist(t *testing.T) {
 }
 
 func TestRunReconcile_OnlyTouchesTargetComponent(t *testing.T) {
-	useInMemoryPatchLimitStateBackend(t)
+	useInMemoryPatchStateBackend(t)
 
 	originalResolver := clusterVersionResolver
 	clusterVersionResolver = func() (string, error) {
@@ -244,12 +244,11 @@ spec:
 		t.Fatalf("failed to resolve flannel component: %v", err)
 	}
 
-	if err := persistPatchLimitDecision(patchLimitDecision{
-		ShouldPersist:  true,
-		StateNamespace: patchLimitStateNamespace(),
-		EntryKey:       patchLimitEntryKey("v1.35.1+rke2r1", traefikComponent.Key),
-		Entry: patchLimitEntry{
-			Component:              traefikComponent.Key,
+	if err := persistPatchDecision(patchStateWrite{
+		StateNamespace: patchStateNamespace(),
+		EntryName:      "v1.35.1+rke2r1|" + traefikComponent.Name,
+		Entry: patchEntry{
+			Component:              traefikComponent.Name,
 			ClusterVersion:         "v1.35.1+rke2r1",
 			BaselineTag:            "v3.3.0",
 			PatchedToTag:           "v3.4.0",
@@ -260,12 +259,11 @@ spec:
 		t.Fatalf("failed to persist traefik state: %v", err)
 	}
 
-	if err := persistPatchLimitDecision(patchLimitDecision{
-		ShouldPersist:  true,
-		StateNamespace: patchLimitStateNamespace(),
-		EntryKey:       patchLimitEntryKey("v1.35.1+rke2r1", flannelComponent.Key),
-		Entry: patchLimitEntry{
-			Component:              flannelComponent.Key,
+	if err := persistPatchDecision(patchStateWrite{
+		StateNamespace: patchStateNamespace(),
+		EntryName:      "v1.35.1+rke2r1|" + flannelComponent.Name,
+		Entry: patchEntry{
+			Component:              flannelComponent.Name,
 			ClusterVersion:         "v1.35.1+rke2r1",
 			BaselineTag:            "v0.9.0",
 			PatchedToTag:           "v1.0.0",
@@ -296,14 +294,14 @@ spec:
 		t.Fatalf("expected flannel file to remain untouched, got:\n%s", string(updatedFlannel))
 	}
 
-	state, _, err := loadPatchLimitStateFromBackend(patchLimitStateNamespace())
+	state, _, err := loadPatchStateFromBackend(patchStateNamespace())
 	if err != nil {
 		t.Fatalf("failed to load state: %v", err)
 	}
-	if _, found := state.Entries[patchLimitEntryKey("v1.35.1+rke2r1", traefikComponent.Key)]; found {
+	if _, found := state.Entries["v1.35.1+rke2r1|"+traefikComponent.Name]; found {
 		t.Fatalf("expected traefik stale state entry to be removed")
 	}
-	if _, found := state.Entries[patchLimitEntryKey("v1.35.1+rke2r1", flannelComponent.Key)]; !found {
+	if _, found := state.Entries["v1.35.1+rke2r1|"+flannelComponent.Name]; !found {
 		t.Fatalf("expected flannel stale state entry to remain")
 	}
 }
@@ -328,7 +326,7 @@ func TestRunReconcileCommand_RequiresComponent(t *testing.T) {
 }
 
 func TestRunReconcile_PromptsAndRevertsCurrentVersionPatchWhenApproved(t *testing.T) {
-	useInMemoryPatchLimitStateBackend(t)
+	useInMemoryPatchStateBackend(t)
 
 	originalResolver := clusterVersionResolver
 	clusterVersionResolver = func() (string, error) {
@@ -376,12 +374,11 @@ spec:
 		t.Fatalf("failed to resolve traefik component: %v", err)
 	}
 
-	if err := persistPatchLimitDecision(patchLimitDecision{
-		ShouldPersist:  true,
-		StateNamespace: patchLimitStateNamespace(),
-		EntryKey:       patchLimitEntryKey("v1.35.2+rke2r1", traefikComponent.Key),
-		Entry: patchLimitEntry{
-			Component:              traefikComponent.Key,
+	if err := persistPatchDecision(patchStateWrite{
+		StateNamespace: patchStateNamespace(),
+		EntryName:      "v1.35.2+rke2r1|" + traefikComponent.Name,
+		Entry: patchEntry{
+			Component:              traefikComponent.Name,
 			ClusterVersion:         "v1.35.2+rke2r1",
 			BaselineTag:            "v3.3.0",
 			PatchedToTag:           "v3.4.0",
@@ -408,17 +405,17 @@ spec:
 		t.Fatalf("expected traefik patcher keys to be removed, got:\n%s", string(updatedTraefik))
 	}
 
-	state, _, err := loadPatchLimitStateFromBackend(patchLimitStateNamespace())
+	state, _, err := loadPatchStateFromBackend(patchStateNamespace())
 	if err != nil {
 		t.Fatalf("failed to load state: %v", err)
 	}
-	if _, found := state.Entries[patchLimitEntryKey("v1.35.2+rke2r1", traefikComponent.Key)]; found {
+	if _, found := state.Entries["v1.35.2+rke2r1|"+traefikComponent.Name]; found {
 		t.Fatalf("expected current-version traefik state entry to be removed after approved revert")
 	}
 }
 
 func TestRunReconcile_PromptsAndKeepsCurrentVersionPatchWhenRejected(t *testing.T) {
-	useInMemoryPatchLimitStateBackend(t)
+	useInMemoryPatchStateBackend(t)
 
 	originalResolver := clusterVersionResolver
 	clusterVersionResolver = func() (string, error) {
@@ -461,12 +458,11 @@ spec:
 		t.Fatalf("failed to resolve traefik component: %v", err)
 	}
 
-	if err := persistPatchLimitDecision(patchLimitDecision{
-		ShouldPersist:  true,
-		StateNamespace: patchLimitStateNamespace(),
-		EntryKey:       patchLimitEntryKey("v1.35.2+rke2r1", traefikComponent.Key),
-		Entry: patchLimitEntry{
-			Component:              traefikComponent.Key,
+	if err := persistPatchDecision(patchStateWrite{
+		StateNamespace: patchStateNamespace(),
+		EntryName:      "v1.35.2+rke2r1|" + traefikComponent.Name,
+		Entry: patchEntry{
+			Component:              traefikComponent.Name,
 			ClusterVersion:         "v1.35.2+rke2r1",
 			BaselineTag:            "v3.3.0",
 			PatchedToTag:           "v3.4.0",
@@ -489,11 +485,11 @@ spec:
 		t.Fatalf("expected traefik file to stay unchanged, got:\n%s", string(updatedTraefik))
 	}
 
-	state, _, err := loadPatchLimitStateFromBackend(patchLimitStateNamespace())
+	state, _, err := loadPatchStateFromBackend(patchStateNamespace())
 	if err != nil {
 		t.Fatalf("failed to load state: %v", err)
 	}
-	if _, found := state.Entries[patchLimitEntryKey("v1.35.2+rke2r1", traefikComponent.Key)]; !found {
+	if _, found := state.Entries["v1.35.2+rke2r1|"+traefikComponent.Name]; !found {
 		t.Fatalf("expected current-version traefik state entry to remain after rejecting revert")
 	}
 }

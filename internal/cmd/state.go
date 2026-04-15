@@ -13,63 +13,63 @@ import (
 )
 
 const (
-	patchLimitStateNamespaceEnv = "RKE2_PATCHER_CVE_NAMESPACE"
-	defaultPatchLimitNamespace  = "rke2-patcher"
+	patchStateNamespaceEnv     = "RKE2_PATCHER_CVE_NAMESPACE"
+	defaultPatchStateNamespace = "rke2-patcher"
 )
 
 var (
-	loadPatchLimitStateFromBackend = loadPatchLimitStateFromKubernetes
-	savePatchLimitStateToBackend   = savePatchLimitStateToKubernetes
-	ensureStateNamespace           = kube.EnsureNamespace
+	loadPatchStateFromBackend = loadPatchStateFromKubernetes
+	savePatchStateToBackend   = savePatchStateToKubernetes
+	ensureStateNamespace      = kube.EnsureNamespace
 )
 
-func evaluatePatchLimit(componentName string, currentTag string, targetTag string) (patchLimitDecision, error) {
+// generateStateWrite creates a patchStateWrite object representing the intent to patch a component from currentTag to targetTag
+func generateStateWrite(componentName string, currentTag string, targetTag string, filePath string, generatedValuesContent string) (patchStateWrite, error) {
 	clusterVersion, err := clusterVersionResolver()
 	if err != nil {
-		return patchLimitDecision{}, fmt.Errorf("failed to resolve cluster version for patch-limit check: %w", err)
+		return patchStateWrite{}, fmt.Errorf("failed to resolve cluster version for patch eligibility check: %w", err)
 	}
 
-	namespace := patchLimitStateNamespace()
-	state, _, err := loadPatchLimitStateFromBackend(namespace)
+	namespace := patchStateNamespace()
+	state, _, err := loadPatchStateFromBackend(namespace)
 	if err != nil {
-		return patchLimitDecision{}, err
+		return patchStateWrite{}, err
 	}
 
 	for _, entry := range state.Entries {
 		if strings.TrimSpace(entry.ClusterVersion) != clusterVersion {
 			componentName := components.CLIName(entry.Component)
-			return patchLimitDecision{}, fmt.Errorf("refusing to patch: active patch for component %q from RKE2 %s exists; run 'rke2-patcher image-reconcile %s' first", componentName, entry.ClusterVersion, componentName)
+			return patchStateWrite{}, fmt.Errorf("refusing to patch: active patch for component %q from RKE2 %s exists; run 'rke2-patcher image-reconcile %s' first", componentName, entry.ClusterVersion, componentName)
 		}
 	}
 
-	entryKey := patchLimitEntryKey(clusterVersion, componentName)
+	entryKey := clusterVersion + "|" + componentName
 	if existing, found := state.Entries[entryKey]; found {
-		return patchLimitDecision{}, fmt.Errorf("refusing to patch: component %q was already patched once for RKE2 %s (baseline: %q, patched-to: %q); upgrade RKE2 to patch again", componentName, clusterVersion, existing.BaselineTag, existing.PatchedToTag)
+		return patchStateWrite{}, fmt.Errorf("refusing to patch: component %q was already patched once for RKE2 %s (baseline: %q, patched-to: %q); upgrade RKE2 to patch again", componentName, clusterVersion, existing.BaselineTag, existing.PatchedToTag)
 	}
 
-	entry := patchLimitEntry{
-		Component:      componentName,
-		ClusterVersion: clusterVersion,
-		BaselineTag:    currentTag,
-		PatchedToTag:   targetTag,
+	entry := patchEntry{
+		Component:              componentName,
+		ClusterVersion:         clusterVersion,
+		BaselineTag:            currentTag,
+		PatchedToTag:           targetTag,
+		FilePath:               filePath,
+		GeneratedValuesContent: generatedValuesContent,
 	}
 
-	return patchLimitDecision{
-		ShouldPersist:  true,
+	return patchStateWrite{
 		StateNamespace: namespace,
-		EntryKey:       entryKey,
+		EntryName:      entryKey,
 		Entry:          entry,
 	}, nil
 }
 
-func persistPatchLimitDecision(decision patchLimitDecision) error {
-	if !decision.ShouldPersist {
-		return nil
-	}
-
+// persistPatchDecision attempts to persist the patch decision in the Kubernetes ConfigMap, 
+// retrying on conflicts to handle concurrent updates
+func persistPatchDecision(decision patchStateWrite) error {
 	stateNamespace := strings.TrimSpace(decision.StateNamespace)
 	if stateNamespace == "" {
-		stateNamespace = patchLimitStateNamespace()
+		stateNamespace = patchStateNamespace()
 	}
 
 	if err := ensureStateNamespace(stateNamespace); err != nil {
@@ -77,12 +77,12 @@ func persistPatchLimitDecision(decision patchLimitDecision) error {
 	}
 
 	for attempt := 0; attempt < 5; attempt++ {
-		state, resourceVersion, err := loadPatchLimitStateFromBackend(stateNamespace)
+		state, resourceVersion, err := loadPatchStateFromBackend(stateNamespace)
 		if err != nil {
 			return err
 		}
 
-		if existing, found := state.Entries[decision.EntryKey]; found {
+		if existing, found := state.Entries[decision.EntryName]; found {
 			if existing.PatchedToTag == decision.Entry.PatchedToTag && existing.BaselineTag == decision.Entry.BaselineTag {
 				return nil
 			}
@@ -90,8 +90,8 @@ func persistPatchLimitDecision(decision patchLimitDecision) error {
 			return fmt.Errorf("component %q is already recorded as patched once for RKE2 %s", existing.Component, existing.ClusterVersion)
 		}
 
-		state.Entries[decision.EntryKey] = decision.Entry
-		err = savePatchLimitStateToBackend(stateNamespace, state, resourceVersion)
+		state.Entries[decision.EntryName] = decision.Entry
+		err = savePatchStateToBackend(stateNamespace, state, resourceVersion)
 		if err == nil {
 			return nil
 		}
@@ -103,28 +103,27 @@ func persistPatchLimitDecision(decision patchLimitDecision) error {
 		return err
 	}
 
-	return fmt.Errorf("failed to persist patch-limit state in ConfigMap %s/%s after retries", stateNamespace, kube.StateConfigMapName)
+	return fmt.Errorf("failed to persist patch state in ConfigMap %s/%s after retries", stateNamespace, kube.StateConfigMapName)
 }
 
-func patchLimitStateNamespace() string {
-	namespace := strings.TrimSpace(os.Getenv(patchLimitStateNamespaceEnv))
+// patchStateNamespace returns the Kubernetes namespace to use for storing patch state, based on the RKE2_PATCHER_CVE_NAMESPACE env var or defaulting to "rke2-patcher"
+func patchStateNamespace() string {
+	namespace := strings.TrimSpace(os.Getenv(patchStateNamespaceEnv))
 	if namespace == "" {
-		return defaultPatchLimitNamespace
+		return defaultPatchStateNamespace
 	}
 
 	return namespace
 }
 
-func patchLimitEntryKey(clusterVersion string, componentName string) string {
-	return strings.TrimSpace(clusterVersion) + "|" + strings.ToLower(strings.TrimSpace(componentName))
-}
-
-func loadPatchLimitStateFromKubernetes(namespace string) (patchLimitState, string, error) {
-	state := patchLimitState{Entries: map[string]patchLimitEntry{}}
+// loadPatchStateFromKubernetes loads the rke2-patcher state from the Kubernetes ConfigMap. It returns
+// the patch state, the resource version of the ConfigMap for optimistic concurrency control
+func loadPatchStateFromKubernetes(namespace string) (patchState, string, error) {
+	state := patchState{Entries: map[string]patchEntry{}}
 
 	content, resourceVersion, err := kube.LoadStateConfigMapDataWithResourceVersion(namespace)
 	if err != nil {
-		return patchLimitState{}, "", err
+		return patchState{}, "", err
 	}
 
 	if strings.TrimSpace(content) == "" {
@@ -132,24 +131,26 @@ func loadPatchLimitStateFromKubernetes(namespace string) (patchLimitState, strin
 	}
 
 	if err := json.Unmarshal([]byte(content), &state); err != nil {
-		return patchLimitState{}, "", fmt.Errorf("failed to parse patch-limit state payload in ConfigMap %s/%s key %q: %w", namespace, kube.StateConfigMapName, kube.StateConfigMapDataKey, err)
+		return patchState{}, "", fmt.Errorf("failed to parse patch state payload in ConfigMap %s/%s key %q: %w", namespace, kube.StateConfigMapName, kube.StateConfigMapDataKey, err)
 	}
 
 	if state.Entries == nil {
-		state.Entries = map[string]patchLimitEntry{}
+		state.Entries = map[string]patchEntry{}
 	}
 
 	return state, resourceVersion, nil
 }
 
-func savePatchLimitStateToKubernetes(namespace string, state patchLimitState, resourceVersion string) error {
+// savePatchStateToKubernetes saves the given patch state to the Kubernetes ConfigMap,
+// using the provided resource version for optimistic concurrency control
+func savePatchStateToKubernetes(namespace string, state patchState, resourceVersion string) error {
 	if state.Entries == nil {
-		state.Entries = map[string]patchLimitEntry{}
+		state.Entries = map[string]patchEntry{}
 	}
 
 	content, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to serialize patch-limit state: %w", err)
+		return fmt.Errorf("failed to serialize patch state: %w", err)
 	}
 
 	if err := kube.SaveStateConfigMapDataWithResourceVersion(namespace, string(content), resourceVersion); err != nil {
@@ -159,7 +160,7 @@ func savePatchLimitStateToKubernetes(namespace string, state patchLimitState, re
 	return nil
 }
 
-func staleEntryKeys(state patchLimitState, currentVersion string) []string {
+func staleEntryKeys(state patchState, currentVersion string) []string {
 	var keys []string
 	for key, entry := range state.Entries {
 		if strings.TrimSpace(entry.ClusterVersion) != currentVersion {
@@ -171,7 +172,7 @@ func staleEntryKeys(state patchLimitState, currentVersion string) []string {
 
 func removeEntriesFromState(namespace string, keysToRemove []string) error {
 	for attempt := 0; attempt < 5; attempt++ {
-		state, resourceVersion, err := loadPatchLimitStateFromBackend(namespace)
+		state, resourceVersion, err := loadPatchStateFromBackend(namespace)
 		if err != nil {
 			return err
 		}
@@ -180,7 +181,7 @@ func removeEntriesFromState(namespace string, keysToRemove []string) error {
 			delete(state.Entries, key)
 		}
 
-		err = savePatchLimitStateToBackend(namespace, state, resourceVersion)
+		err = savePatchStateToBackend(namespace, state, resourceVersion)
 		if err == nil {
 			return nil
 		}
@@ -192,9 +193,10 @@ func removeEntriesFromState(namespace string, keysToRemove []string) error {
 		return err
 	}
 
-	return fmt.Errorf("failed to remove stale entries from state in ConfigMap %s/%s after retries", namespace, kube.StateConfigMapName)
+	return fmt.Errorf("failed to remove stale entries from patch state in ConfigMap %s/%s after retries", namespace, kube.StateConfigMapName)
 }
 
+// ensureManifestsDirectoryExists checks if the directory for the given file path exists and is a directory,
 func ensureManifestsDirectoryExists(filePath string) error {
 	manifestsDir := strings.TrimSpace(filepath.Dir(filePath))
 	if manifestsDir == "" {

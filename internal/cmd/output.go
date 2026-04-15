@@ -8,7 +8,7 @@ import (
 )
 
 func printImageListWithCVEs(component components.Component, tagsToScan []string, currentTag string, previousTag string, cveByTag map[string]cveListEntry, verbose bool) {
-	fmt.Printf("COMPONENT:  %s\n", components.CLIName(component.Key))
+	fmt.Printf("COMPONENT:  %s\n", components.CLIName(component.Name))
 	fmt.Printf("REPOSITORY: %s\n\n", component.Repository)
 	fmt.Printf("%-24s %-10s %-10s %s\n", "TAG", "STATUS", "CVE COUNT", "VULNERABILITIES")
 
@@ -70,7 +70,7 @@ func renderCVESummary(entry cveListEntry, verbose bool) (string, string) {
 	return count, fmt.Sprintf("%s...", strings.Join(entry.CVEs[:2], ", "))
 }
 
-func printReconcileApplied(entry patchLimitEntry) {
+func printReconcileApplied(entry patchEntry) {
 	fmt.Printf("reconcile: component %s: stripped patcher overrides (was pinned to %s on RKE2 %s)\n", components.CLIName(entry.Component), entry.PatchedToTag, entry.ClusterVersion)
 }
 

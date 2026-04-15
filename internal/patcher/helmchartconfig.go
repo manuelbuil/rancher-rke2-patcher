@@ -8,7 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"dario.cat/mergo"
 	"gopkg.in/yaml.v3"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 const (
@@ -20,8 +23,9 @@ const (
 	defaultRegistryHost = "registry.rancher.com"
 )
 
+// WriteHelmChartConfig generates a HelmChartConfig manifest and writes it to the appropriate file path
 func WriteHelmChartConfig(componentName string, defaultChartConfigName string, imageName string, imageTag string) (string, error) {
-	filePath, content := BuildHelmChartConfig(componentName, defaultChartConfigName, imageName, imageTag)
+	filePath, content, _ := BuildHelmChartConfig(componentName, defaultChartConfigName, imageName, imageTag)
 
 	if err := WriteHelmChartConfigContent(filePath, content); err != nil {
 		return filePath, err
@@ -38,45 +42,26 @@ func WriteHelmChartConfigContent(filePath string, content string) error {
 	return nil
 }
 
-func BuildHelmChartConfig(componentName string, defaultChartConfigName string, imageName string, imageTag string) (string, string) {
-	return BuildHelmChartConfigWithDataDir(componentName, defaultChartConfigName, imageName, imageTag, "")
-}
+// BuildHelmChartConfig generates the file path and content for a HelmChartConfig manifest
+func BuildHelmChartConfig(componentName string, defaultChartConfigName string, imageName string, imageTag string) (string, string, string) {
+	manifestsDir := resolveManifestsDir()
 
-func BuildHelmChartConfigWithDataDir(componentName string, defaultChartConfigName string, imageName string, imageTag string, dataDirOverride string) (string, string) {
-	manifestsDir := resolveManifestsDir(dataDirOverride)
-
-	normalizedComponentName := normalizeHCCFileComponentName(componentName)
-	helmChartConfigFile := normalizedComponentName + "-config-rke2-patcher.yaml"
-	helmChartConfigName := defaultChartConfigName
-	namespace := defaultNamespace
+	helmChartConfigFile := componentName + "-config-rke2-patcher.yaml"
 
 	filePath := filepath.Join(manifestsDir, helmChartConfigFile)
-	content := renderHelmChartConfig(componentName, helmChartConfigName, namespace, imageName, imageTag)
+	valuesContent := renderValuesContent(componentName, defaultChartConfigName, imageName, imageTag)
+	content := renderHelmChartConfig(defaultChartConfigName, defaultNamespace, valuesContent)
 
-	return filePath, content
+	return filePath, content, valuesContent
 }
 
-func normalizeHCCFileComponentName(componentName string) string {
-	trimmed := strings.TrimSpace(componentName)
-	if trimmed == "" {
-		return "rke2-component"
+// resolveManifestsDir determines the directory where HelmChartConfig manifests should be written
+func resolveManifestsDir() string {
+	envVar := strings.TrimSpace(os.Getenv(dataDirEnv))
+	if envVar == "" {
+		return filepath.Join(defaultDataDir, "server", "manifests")
 	}
-
-	if strings.HasPrefix(strings.ToLower(trimmed), "rke2-") {
-		return trimmed
-	}
-
-	return "rke2-" + trimmed
-}
-
-func resolveManifestsDir(dataDirOverride string) string {
-	trimmedDataDirOverride := strings.TrimSpace(dataDirOverride)
-	if trimmedDataDirOverride != "" {
-		return filepath.Join(trimmedDataDirOverride, "server", "manifests")
-	}
-
-	dataDir := envOrDefault(dataDirEnv, defaultDataDir)
-	return filepath.Join(dataDir, "server", "manifests")
+	return filepath.Join(envVar, "server", "manifests")
 }
 
 func MergeHelmChartConfigWithContents(generatedContent string, existingContents []string) (string, error) {
@@ -85,8 +70,8 @@ func MergeHelmChartConfigWithContents(generatedContent string, existingContents 
 		return "", fmt.Errorf("failed to parse generated HelmChartConfig: %w", err)
 	}
 
-	targetName := strings.TrimSpace(generatedDoc.Metadata.Name)
-	targetNamespace := strings.TrimSpace(generatedDoc.Metadata.Namespace)
+	targetName := strings.TrimSpace(generatedDoc.GetName())
+	targetNamespace := strings.TrimSpace(generatedDoc.GetNamespace())
 	if targetName == "" || targetNamespace == "" {
 		return "", fmt.Errorf("generated HelmChartConfig is missing metadata.name or metadata.namespace")
 	}
@@ -101,16 +86,28 @@ func MergeHelmChartConfigWithContents(generatedContent string, existingContents 
 			continue
 		}
 
-		mergedSpec = deepMergeMaps(mergedSpec, spec)
+		mergedSpec, err = mergeMapsWithOverride(mergedSpec, spec)
+		if err != nil {
+			return "", err
+		}
 	}
 
-	generatedSpec := generatedDoc.Spec
-	if generatedSpec == nil {
+	generatedSpec, found, err := unstructured.NestedMap(generatedDoc.Object, "spec")
+	if err != nil {
+		return "", fmt.Errorf("failed to parse generated HelmChartConfig spec: %w", err)
+	}
+	if !found || generatedSpec == nil {
 		generatedSpec = map[string]any{}
 	}
 
-	existingValues, hasExistingValues := stringField(mergedSpec, "valuesContent")
-	newValues, hasNewValues := stringField(generatedSpec, "valuesContent")
+	existingValues, hasExistingValues, err := unstructured.NestedString(mergedSpec, "valuesContent")
+	if err != nil {
+		return "", fmt.Errorf("failed to parse existing valuesContent: %w", err)
+	}
+	newValues, hasNewValues, err := unstructured.NestedString(generatedSpec, "valuesContent")
+	if err != nil {
+		return "", fmt.Errorf("failed to parse generated valuesContent: %w", err)
+	}
 	if hasExistingValues && hasNewValues {
 		combinedValues, err := mergeValuesContent(existingValues, newValues)
 		if err != nil {
@@ -119,26 +116,23 @@ func MergeHelmChartConfigWithContents(generatedContent string, existingContents 
 		generatedSpec["valuesContent"] = combinedValues
 	}
 
-	mergedSpec = deepMergeMaps(mergedSpec, generatedSpec)
-
-	mergedDoc := helmChartConfigDoc{
-		APIVersion: generatedDoc.APIVersion,
-		Kind:       generatedDoc.Kind,
-		Metadata: metadataRef{
-			Name:      generatedDoc.Metadata.Name,
-			Namespace: generatedDoc.Metadata.Namespace,
-		},
-		Spec: mergedSpec,
+	mergedSpec, err = mergeMapsWithOverride(mergedSpec, generatedSpec)
+	if err != nil {
+		return "", err
 	}
 
-	if strings.TrimSpace(mergedDoc.APIVersion) == "" {
-		mergedDoc.APIVersion = "helm.cattle.io/v1"
+	mergedDoc := generatedDoc.DeepCopy()
+	if err := unstructured.SetNestedMap(mergedDoc.Object, mergedSpec, "spec"); err != nil {
+		return "", fmt.Errorf("failed setting merged HelmChartConfig spec: %w", err)
 	}
-	if strings.TrimSpace(mergedDoc.Kind) == "" {
-		mergedDoc.Kind = "HelmChartConfig"
+	if strings.TrimSpace(mergedDoc.GetAPIVersion()) == "" {
+		mergedDoc.SetAPIVersion("helm.cattle.io/v1")
+	}
+	if strings.TrimSpace(mergedDoc.GetKind()) == "" {
+		mergedDoc.SetKind("HelmChartConfig")
 	}
 
-	b, err := yaml.Marshal(mergedDoc)
+	b, err := yaml.Marshal(mergedDoc.Object)
 	if err != nil {
 		return "", err
 	}
@@ -156,8 +150,8 @@ func HelmChartConfigIdentityFromContent(content string) (string, string, error) 
 		return "", "", err
 	}
 
-	name := strings.TrimSpace(doc.Metadata.Name)
-	namespace := strings.TrimSpace(doc.Metadata.Namespace)
+	name := strings.TrimSpace(doc.GetName())
+	namespace := strings.TrimSpace(doc.GetNamespace())
 	if name == "" || namespace == "" {
 		return "", "", fmt.Errorf("HelmChartConfig content missing metadata.name or metadata.namespace")
 	}
@@ -165,133 +159,82 @@ func HelmChartConfigIdentityFromContent(content string) (string, string, error) 
 	return name, namespace, nil
 }
 
-type helmChartConfigDoc struct {
-	APIVersion string         `yaml:"apiVersion"`
-	Kind       string         `yaml:"kind"`
-	Metadata   metadataRef    `yaml:"metadata"`
-	Spec       map[string]any `yaml:"spec,omitempty"`
-}
-
-type metadataRef struct {
-	Name      string `yaml:"name"`
-	Namespace string `yaml:"namespace"`
-}
-
-func parseSingleHelmChartConfig(content string) (helmChartConfigDoc, error) {
+func parseSingleHelmChartConfig(content string) (*unstructured.Unstructured, error) {
 	decoder := yaml.NewDecoder(strings.NewReader(content))
 	for {
-		var doc helmChartConfigDoc
-		err := decoder.Decode(&doc)
+		var obj map[string]any
+		err := decoder.Decode(&obj)
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return helmChartConfigDoc{}, err
+			return nil, err
+		}
+		if len(obj) == 0 {
+			continue
 		}
 
-		if strings.EqualFold(strings.TrimSpace(doc.Kind), "HelmChartConfig") {
+		doc := &unstructured.Unstructured{Object: obj}
+		if strings.EqualFold(strings.TrimSpace(doc.GetKind()), "HelmChartConfig") {
 			return doc, nil
 		}
 	}
 
-	return helmChartConfigDoc{}, fmt.Errorf("no HelmChartConfig document found")
+	return nil, fmt.Errorf("no HelmChartConfig document found")
 }
 
 func findMatchingSpecInContent(content string, targetName string, targetNamespace string) (map[string]any, bool, error) {
 	decoder := yaml.NewDecoder(strings.NewReader(content))
 
 	for {
-		var doc helmChartConfigDoc
-		err := decoder.Decode(&doc)
+		var obj map[string]any
+		err := decoder.Decode(&obj)
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			return nil, false, fmt.Errorf("failed parsing HelmChartConfig content: %w", err)
 		}
+		if len(obj) == 0 {
+			continue
+		}
+		doc := &unstructured.Unstructured{Object: obj}
 
-		if !strings.EqualFold(strings.TrimSpace(doc.Kind), "HelmChartConfig") {
+		if !strings.EqualFold(strings.TrimSpace(doc.GetKind()), "HelmChartConfig") {
 			continue
 		}
 
-		if strings.TrimSpace(doc.Metadata.Name) == targetName && strings.TrimSpace(doc.Metadata.Namespace) == targetNamespace {
-			if doc.Spec == nil {
+		name := strings.TrimSpace(doc.GetName())
+		namespace := strings.TrimSpace(doc.GetNamespace())
+
+		if name == targetName && namespace == targetNamespace {
+			spec, found, err := unstructured.NestedMap(doc.Object, "spec")
+			if err != nil {
+				return nil, false, fmt.Errorf("failed parsing HelmChartConfig spec: %w", err)
+			}
+			if !found || spec == nil {
 				return map[string]any{}, true, nil
 			}
-			return deepCopyMap(doc.Spec), true, nil
+			return spec, true, nil
 		}
 	}
 
 	return nil, false, nil
 }
 
-func deepMergeMaps(base map[string]any, overlay map[string]any) map[string]any {
-	result := deepCopyMap(base)
+func mergeMapsWithOverride(base map[string]any, overlay map[string]any) (map[string]any, error) {
+	result := runtime.DeepCopyJSON(base)
 	if result == nil {
 		result = map[string]any{}
 	}
 
-	for key, overlayValue := range overlay {
-		baseValue, found := result[key]
-		if found {
-			baseMap, baseIsMap := baseValue.(map[string]any)
-			overlayMap, overlayIsMap := overlayValue.(map[string]any)
-			if baseIsMap && overlayIsMap {
-				result[key] = deepMergeMaps(baseMap, overlayMap)
-				continue
-			}
+	if overlay != nil {
+		if err := mergo.Merge(&result, overlay, mergo.WithOverride); err != nil {
+			return nil, fmt.Errorf("failed to merge overlay values: %w", err)
 		}
-
-		result[key] = deepCopyValue(overlayValue)
 	}
 
-	return result
-}
-
-func deepCopyMap(input map[string]any) map[string]any {
-	if input == nil {
-		return nil
-	}
-
-	result := make(map[string]any, len(input))
-	for key, value := range input {
-		result[key] = deepCopyValue(value)
-	}
-
-	return result
-}
-
-func deepCopyValue(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return deepCopyMap(typed)
-	case []any:
-		copied := make([]any, len(typed))
-		for i := range typed {
-			copied[i] = deepCopyValue(typed[i])
-		}
-		return copied
-	default:
-		return typed
-	}
-}
-
-func stringField(spec map[string]any, field string) (string, bool) {
-	if spec == nil {
-		return "", false
-	}
-
-	raw, found := spec[field]
-	if !found {
-		return "", false
-	}
-
-	value, ok := raw.(string)
-	if !ok {
-		return "", false
-	}
-
-	return value, true
+	return result, nil
 }
 
 func mergeValuesContent(existing string, incoming string) (string, error) {
@@ -315,7 +258,17 @@ func mergeValuesContent(existing string, incoming string) (string, error) {
 		return "", fmt.Errorf("failed to parse generated valuesContent: %w", err)
 	}
 
-	mergedValues := deepMergeValue(existingValues, incomingValues)
+	mergedValues := runtime.DeepCopyJSONValue(incomingValues)
+	existingMap, existingIsMap := existingValues.(map[string]any)
+	incomingMap, incomingIsMap := incomingValues.(map[string]any)
+	if existingIsMap && incomingIsMap {
+		mergedMap, err := mergeMapsWithOverride(existingMap, incomingMap)
+		if err != nil {
+			return "", fmt.Errorf("failed to merge valuesContent maps: %w", err)
+		}
+		mergedValues = mergedMap
+	}
+
 	b, err := yaml.Marshal(mergedValues)
 	if err != nil {
 		return "", err
@@ -324,33 +277,23 @@ func mergeValuesContent(existing string, incoming string) (string, error) {
 	return strings.TrimRight(string(b), "\n"), nil
 }
 
-func deepMergeValue(base any, overlay any) any {
-	baseMap, baseIsMap := base.(map[string]any)
-	overlayMap, overlayIsMap := overlay.(map[string]any)
-	if baseIsMap && overlayIsMap {
-		return deepMergeMaps(baseMap, overlayMap)
-	}
-
-	return deepCopyValue(overlay)
-}
-
-func ExtractValuesContent(fileContent string) (string, error) {
-	doc, err := parseSingleHelmChartConfig(fileContent)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse HelmChartConfig: %w", err)
-	}
-
-	value, _ := stringField(doc.Spec, "valuesContent")
-	return value, nil
-}
-
 func SubtractPatcherValuesContent(existingFileContent, generatedValuesContent string) (string, error) {
 	existingDoc, err := parseSingleHelmChartConfig(existingFileContent)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse existing HelmChartConfig: %w", err)
 	}
+	existingSpec, found, err := unstructured.NestedMap(existingDoc.Object, "spec")
+	if err != nil {
+		return "", fmt.Errorf("failed to parse existing HelmChartConfig spec: %w", err)
+	}
+	if !found || existingSpec == nil {
+		existingSpec = map[string]any{}
+	}
 
-	existingValuesStr, hasExisting := stringField(existingDoc.Spec, "valuesContent")
+	existingValuesStr, hasExisting, err := unstructured.NestedString(existingSpec, "valuesContent")
+	if err != nil {
+		return "", fmt.Errorf("failed to parse existing valuesContent: %w", err)
+	}
 	if !hasExisting || strings.TrimSpace(existingValuesStr) == "" {
 		return existingFileContent, nil
 	}
@@ -372,7 +315,10 @@ func SubtractPatcherValuesContent(existingFileContent, generatedValuesContent st
 
 	resultValues := deepSubtractMap(existingValues, generatedValues)
 
-	updatedSpec := deepCopyMap(existingDoc.Spec)
+	updatedSpec := map[string]any{}
+	if existingSpec != nil {
+		updatedSpec = runtime.DeepCopyJSON(existingSpec)
+	}
 	if len(resultValues) == 0 {
 		delete(updatedSpec, "valuesContent")
 	} else {
@@ -383,17 +329,12 @@ func SubtractPatcherValuesContent(existingFileContent, generatedValuesContent st
 		updatedSpec["valuesContent"] = strings.TrimRight(string(b), "\n")
 	}
 
-	updatedDoc := helmChartConfigDoc{
-		APIVersion: existingDoc.APIVersion,
-		Kind:       existingDoc.Kind,
-		Metadata: metadataRef{
-			Name:      existingDoc.Metadata.Name,
-			Namespace: existingDoc.Metadata.Namespace,
-		},
-		Spec: updatedSpec,
+	updatedDoc := existingDoc.DeepCopy()
+	if err := unstructured.SetNestedMap(updatedDoc.Object, updatedSpec, "spec"); err != nil {
+		return "", fmt.Errorf("failed setting updated HelmChartConfig spec: %w", err)
 	}
 
-	result, err := yaml.Marshal(updatedDoc)
+	result, err := yaml.Marshal(updatedDoc.Object)
 	if err != nil {
 		return "", fmt.Errorf("failed to serialize updated HelmChartConfig: %w", err)
 	}
@@ -406,7 +347,10 @@ func SubtractPatcherValuesContent(existingFileContent, generatedValuesContent st
 }
 
 func deepSubtractMap(base, toRemove map[string]any) map[string]any {
-	result := deepCopyMap(base)
+	result := map[string]any{}
+	if base != nil {
+		result = runtime.DeepCopyJSON(base)
+	}
 	for key, removeValue := range toRemove {
 		existingValue, found := result[key]
 		if !found {
@@ -430,9 +374,8 @@ func deepSubtractMap(base, toRemove map[string]any) map[string]any {
 	return result
 }
 
-func renderHelmChartConfig(componentName string, chartName string, namespace string, imageName string, imageTag string) string {
-	valuesContent := renderValuesContent(componentName, chartName, imageName, imageTag)
-
+// renderHelmChartConfig generates the content of a HelmChartConfig manifest for the given component, chart, and image details
+func renderHelmChartConfig(chartName string, namespace string, valuesContent string) string {
 	return fmt.Sprintf(`apiVersion: helm.cattle.io/v1
 kind: HelmChartConfig
 metadata:
@@ -444,13 +387,15 @@ spec:
 `, chartName, namespace, valuesContent)
 }
 
+// renderValuesContent generates the valuesContent block for the HelmChartConfig based on the component and chart names
 func renderValuesContent(componentName string, chartName string, imageName string, imageTag string) string {
-	if strings.EqualFold(strings.TrimSpace(componentName), "calico-operator") || strings.EqualFold(strings.TrimSpace(chartName), "rke2-calico") {
+	if strings.EqualFold(chartName, "rke2-calico") {
 		image := imageRepositoryWithoutRegistry(imageName)
 		if image == "" {
 			image = strings.TrimSpace(imageName)
 		}
 
+		// rke2-calico-operator has the registry parameter
 		registryHost := configuredRegistryHost()
 
 		return fmt.Sprintf(`    tigeraOperator: # change made by rke2-patcher
@@ -459,14 +404,14 @@ func renderValuesContent(componentName string, chartName string, imageName strin
       registry: %s # change made by rke2-patcher`, image, imageTag, registryHost)
 	}
 
-	if strings.EqualFold(strings.TrimSpace(componentName), "ingress-nginx") || strings.EqualFold(strings.TrimSpace(chartName), "rke2-ingress-nginx") {
+	if strings.EqualFold(chartName, "rke2-ingress-nginx") {
 		return fmt.Sprintf(`    controller: # change made by rke2-patcher
       image: # change made by rke2-patcher
         repository: %s # change made by rke2-patcher
         tag: %s # change made by rke2-patcher`, imageName, imageTag)
 	}
 
-	if strings.EqualFold(strings.TrimSpace(componentName), "cilium-operator") || strings.EqualFold(strings.TrimSpace(chartName), "rke2-cilium") {
+	if strings.EqualFold(chartName, "rke2-cilium") {
 		repository := strings.TrimSuffix(strings.TrimSpace(imageName), "-generic")
 		if repository == "" {
 			repository = imageName
@@ -478,7 +423,7 @@ func renderValuesContent(componentName string, chartName string, imageName strin
         tag: %s # change made by rke2-patcher`, repository, imageTag)
 	}
 
-	if strings.EqualFold(strings.TrimSpace(componentName), "canal") || strings.EqualFold(strings.TrimSpace(componentName), "canal-calico") {
+	if strings.EqualFold(componentName, "rke2-canal-calico") {
 		return fmt.Sprintf("    calico: # change made by rke2-patcher\n"+
 			"      cniImage: # change made by rke2-patcher\n"+
 			"        repository: %s # change made by rke2-patcher\n"+
@@ -495,7 +440,7 @@ func renderValuesContent(componentName string, chartName string, imageName strin
 			imageName, imageTag, imageName, imageTag, imageName, imageTag, imageName, imageTag)
 	}
 
-	if strings.EqualFold(strings.TrimSpace(componentName), "canal-flannel") {
+	if strings.EqualFold(componentName, "rke2-canal-flannel") {
 		return fmt.Sprintf(`    flannel: # change made by rke2-patcher
       image: # change made by rke2-patcher
         repository: %s # change made by rke2-patcher
@@ -507,22 +452,15 @@ func renderValuesContent(componentName string, chartName string, imageName strin
       tag: %s # change made by rke2-patcher`, imageName, imageTag)
 }
 
-func envOrDefault(key string, fallback string) string {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback
-	}
-
-	return value
-}
-
+// configuredRegistryHost determines the registry host to use based on the RKE2_PATCHER_REGISTRY environment variable,
+// with fallback to default if not set or invalid
 func configuredRegistryHost() string {
-	rawValue := strings.TrimSpace(os.Getenv(registryEnv))
-	if rawValue == "" {
-		rawValue = defaultRegistryHost
+	envVar := strings.TrimSpace(os.Getenv(registryEnv))
+	if envVar == "" {
+		envVar = defaultRegistryHost
 	}
 
-	host := registryHostFromValue(rawValue)
+	host := registryHostFromURL(envVar)
 	if strings.TrimSpace(host) == "" {
 		return defaultRegistryHost
 	}
@@ -530,14 +468,11 @@ func configuredRegistryHost() string {
 	return host
 }
 
-func registryHostFromValue(value string) string {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return ""
-	}
-
-	if strings.Contains(trimmed, "://") {
-		parsed, err := url.Parse(trimmed)
+// registryHostFromURL attempts to extract a registry host from a given string, which may be a full URL or just a hostname
+// If the input cannot be parsed as a URL, it will be treated as a hostname directly.
+func registryHostFromURL(envVarUrl string) string {
+	if strings.Contains(envVarUrl, "://") {
+		parsed, err := url.Parse(envVarUrl)
 		if err == nil {
 			host := strings.TrimSpace(parsed.Host)
 			if host != "" {
@@ -546,7 +481,7 @@ func registryHostFromValue(value string) string {
 		}
 	}
 
-	trimmed = strings.Trim(trimmed, "/")
+	trimmed := strings.Trim(envVarUrl, "/")
 	if trimmed == "" {
 		return ""
 	}
@@ -560,20 +495,15 @@ func registryHostFromValue(value string) string {
 }
 
 func imageRepositoryWithoutRegistry(imageName string) string {
-	trimmed := strings.TrimSpace(imageName)
-	if trimmed == "" {
-		return ""
-	}
-
-	parts := strings.Split(trimmed, "/")
+	parts := strings.Split(imageName, "/")
 	if len(parts) < 2 {
-		return trimmed
+		return imageName
 	}
 
 	first := strings.ToLower(parts[0])
 	hasRegistryPrefix := strings.Contains(first, ".") || strings.Contains(first, ":") || first == "localhost"
 	if !hasRegistryPrefix {
-		return trimmed
+		return imageName
 	}
 
 	return strings.Join(parts[1:], "/")

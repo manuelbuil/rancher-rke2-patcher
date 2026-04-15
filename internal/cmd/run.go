@@ -28,7 +28,7 @@ func runCVE(component components.Component) error {
 		return fmt.Errorf("failed to scan image %q: %w", image, err)
 	}
 
-	fmt.Printf("component: %s\n", components.CLIName(component.Key))
+	fmt.Printf("component: %s\n", components.CLIName(component.Name))
 	fmt.Printf("image: %s\n", image)
 	fmt.Printf("scanner: %s\n", resultCVEs.Tool)
 
@@ -92,7 +92,7 @@ func runImageList(component components.Component, options imageListOptions) erro
 		}
 	}
 
-	fmt.Printf("component: %s\n", components.CLIName(component.Key))
+	fmt.Printf("component: %s\n", components.CLIName(component.Name))
 	fmt.Printf("repository: %s\n", component.Repository)
 	fmt.Printf("running image(s):\n")
 	for _, summary := range runningImages {
@@ -154,6 +154,8 @@ func runImageListWithCVEs(component components.Component, imageName, currentTag 
 	return nil
 }
 
+// runImagePatch attempts to patch the running image of the component to a new tag by writing a HelmChartConfig manifest
+//  with the new image, handling potential conflicts with existing HelmChartConfigs and respecting patch limits
 func runImagePatch(component components.Component, options imagePatchOptions) error {
 	runningImages, err := kube.ListRunningImages(component.Workload, component.Repository)
 	if err != nil {
@@ -168,29 +170,23 @@ func runImagePatch(component components.Component, options imagePatchOptions) er
 		return err
 	}
 
-	patchDecision, err := evaluatePatchLimit(component.Key, currentImageTag, targetTagName)
-	if err != nil {
-		return err
-	}
-
-	filePath, generatedContent := patcher.BuildHelmChartConfigWithDataDir(component.Key, component.HelmChartConfigName, currentImageName, targetTagName, "")
+	filePath, generatedContent, generatedValuesContent := patcher.BuildHelmChartConfig(component.Name, component.HelmChartConfigName, currentImageName, targetTagName)
 	if options.DryRun {
-		printPatchPreview(components.CLIName(component.Key), runningImage, currentImageTag, targetTagName, filePath, generatedContent)
+		printPatchPreview(components.CLIName(component.Name), runningImage, currentImageTag, targetTagName, filePath, generatedContent)
 		return nil
 	}
 
-	generatedValuesContent, err := patcher.ExtractValuesContent(generatedContent)
+	stateWrite, err := generateStateWrite(component.Name, currentImageTag, targetTagName, filePath, generatedValuesContent)
 	if err != nil {
-		return fmt.Errorf("failed to extract generated valuesContent: %w", err)
+		return err
 	}
-	patchDecision.Entry.FilePath = filePath
-	patchDecision.Entry.GeneratedValuesContent = generatedValuesContent
 
 	targetName, targetNamespace, err := patcher.HelmChartConfigIdentityFromContent(generatedContent)
 	if err != nil {
 		return err
 	}
 
+	// If there are no conflicts, contentToWrite remains as generatedContent
 	contentToWrite := generatedContent
 	conflicts, err := kube.ListHelmChartConfigsByIdentity(targetName, targetNamespace)
 	if err != nil {
@@ -223,7 +219,7 @@ func runImagePatch(component components.Component, options imagePatchOptions) er
 		}
 		contentToWrite = mergedContent
 
-		printPatchPreview(components.CLIName(component.Key), runningImage, currentImageTag, targetTagName, filePath, contentToWrite)
+		printPatchPreview(components.CLIName(component.Name), runningImage, currentImageTag, targetTagName, filePath, contentToWrite)
 		secondConfirm, err := promptYesNoFn("Apply this HelmChartConfig now? [Yes/No]: ")
 		if err != nil {
 			return err
@@ -251,11 +247,11 @@ func runImagePatch(component components.Component, options imagePatchOptions) er
 	}
 
 	// Persist patch-limit state only after the file is confirmed on disk.
-	if err := persistPatchLimitDecision(patchDecision); err != nil {
+	if err := persistPatchDecision(stateWrite); err != nil {
 		return fmt.Errorf("failed to persist patch-limit state: %w", err)
 	}
 
-	printPatchApplied(components.CLIName(component.Key), runningImage, currentImageTag, targetTagName, filePath)
+	printPatchApplied(components.CLIName(component.Name), runningImage, currentImageTag, targetTagName, filePath)
 	return nil
 }
 
@@ -265,8 +261,8 @@ func runReconcile(component components.Component) error {
 		return fmt.Errorf("failed to resolve cluster version: %w", err)
 	}
 
-	namespace := patchLimitStateNamespace()
-	state, _, err := loadPatchLimitStateFromBackend(namespace)
+	namespace := patchStateNamespace()
+	state, _, err := loadPatchStateFromBackend(namespace)
 	if err != nil {
 		return err
 	}
@@ -274,7 +270,7 @@ func runReconcile(component components.Component) error {
 	staleKeys := make([]string, 0)
 	currentKeys := make([]string, 0)
 	for key, entry := range state.Entries {
-		if !components.SameComponent(entry.Component, component.Key) {
+		if !components.SameComponent(entry.Component, component.Name) {
 			continue
 		}
 		if strings.TrimSpace(entry.ClusterVersion) == currentVersion {
@@ -285,7 +281,7 @@ func runReconcile(component components.Component) error {
 	}
 
 	if len(staleKeys) == 0 {
-		componentName := components.CLIName(component.Key)
+		componentName := components.CLIName(component.Name)
 		if len(currentKeys) == 0 {
 			printReconcileAlreadyCurrent(componentName)
 			return nil
@@ -339,7 +335,7 @@ func verifyFileWritten(filePath string, writeTime time.Time) error {
 	return nil
 }
 
-func reconcileEntry(entry patchLimitEntry) error {
+func reconcileEntry(entry patchEntry) error {
 	filePath := strings.TrimSpace(entry.FilePath)
 	if filePath == "" {
 		return nil

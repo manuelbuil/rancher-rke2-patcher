@@ -222,7 +222,7 @@ func selectTagsForCVEListing(tags []registry.Tag, currentTag string) ([]string, 
 	return ordered, previousTag
 }
 
-// resolvePatchTargetTag finds the target tag to patch to after going through the different limitations checks
+// resolvePatchTargetTag finds the target tag to patch to after going through the different limitations checks (mainly, new minor)
 func resolvePatchTargetTag(repository string, currentTag string) (string, error) {
 	tags, err := registry.ListTags(repository, 200)
 	if err != nil {
