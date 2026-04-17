@@ -89,6 +89,23 @@ func resolvePatcherBinaryPath(patcherBinary string) (string, error) {
 	return "", fmt.Errorf("patcher binary %q not found from working directory %q or any parent directory", trimmed, workingDir)
 }
 
+func (config *TestConfig) InstallTrivyLocally(version string) error {
+	installCmd := fmt.Sprintf("curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin v%s", version)
+	if out, err := config.Server.RunCmdOnNode(installCmd); err != nil {
+		return fmt.Errorf("failed to install trivy: %s: %w", out, err)
+	}
+	return nil
+}
+
+func (config *TestConfig) CheckTrivyVersion() (string, error) {
+	installCmd := "trivy --version"
+	out, err := config.Server.RunCmdOnNode(installCmd)
+	if err != nil {
+		return "", fmt.Errorf("failed to check trivy version: %s: %w", out, err)
+	}
+	return out, nil
+}
+
 func (config *TestConfig) ProvisionServer() error {
 	serverName := fmt.Sprintf("rke2-server-%d", time.Now().UnixNano())
 	port := getPort()
@@ -109,7 +126,6 @@ func (config *TestConfig) ProvisionServer() error {
 		"--memory", "4096m",
 		"-p", fmt.Sprintf("127.0.0.1:%d:6443", port),
 		"-e", "RKE2_TOKEN=testtoken",
-		"-e", "RKE2_DEBUG=true",
 		"-v", "/sys/fs/bpf:/sys/fs/bpf",
 		"-v", "/lib/modules:/lib/modules",
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
@@ -328,41 +344,45 @@ func (config *TestConfig) EnsureScannerNamespace() error {
 }
 
 func (config *TestConfig) RunImageCVE(component string) (string, error) {
-	cmd := exec.Command(config.PatcherBinary, "image-cve", component)
-	cmd.Env = append(os.Environ(),
-		"KUBECONFIG="+config.KubeconfigFile,
-		"RKE2_PATCHER_CVE_NAMESPACE="+scannerNamespace,
-		"RKE2_PATCHER_CVE_JOB_TIMEOUT=10m",
-	)
-
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return string(out), fmt.Errorf("image-cve failed for %s: %w", component, err)
+  
+	if err := config.CopyPatcherBinaryToServer(); err != nil {
+		return "", err
 	}
 
-	return string(out), nil
+	command := fmt.Sprintf(
+		"KUBECONFIG=/etc/rancher/rke2/rke2.yaml %s image-cve %s",
+		nodePatcherBinaryPath,
+		component,
+	)
+
+	out, err := config.Server.RunCmdOnNode(command)
+	if err != nil {
+		return out, fmt.Errorf("image-cve failed for %s: %w", component, err)
+	}
+	return out, nil
 }
 
 func (config *TestConfig) RunImageList(component string, withCVEs bool) (string, error) {
+	if err := config.CopyPatcherBinaryToServer(); err != nil {
+		return "", err
+	}
+
 	args := []string{"image-list"}
 	if withCVEs {
 		args = append(args, "--with-cves")
 	}
 	args = append(args, component)
-
-	cmd := exec.Command(config.PatcherBinary, args...)
-	cmd.Env = append(os.Environ(),
-		"KUBECONFIG="+config.KubeconfigFile,
-		"RKE2_PATCHER_CVE_NAMESPACE="+scannerNamespace,
-		"RKE2_PATCHER_CVE_JOB_TIMEOUT=10m",
+	command := fmt.Sprintf(
+		"KUBECONFIG=/etc/rancher/rke2/rke2.yaml %s %s",
+		nodePatcherBinaryPath,
+		strings.Join(args, " "),
 	)
 
-	out, err := cmd.CombinedOutput()
+	out, err := config.Server.RunCmdOnNode(command)
 	if err != nil {
-		return string(out), fmt.Errorf("image-list failed for %s: %w", component, err)
+		return out, fmt.Errorf("image-list failed for %s: %w", component, err)
 	}
-
-	return string(out), nil
+	return out, nil
 }
 
 func (config *TestConfig) RunImagePatch(component string, dryRun bool) (string, error) {

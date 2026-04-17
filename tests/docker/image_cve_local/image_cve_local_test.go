@@ -2,12 +2,17 @@ package main
 
 import (
 	"flag"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/manuelbuil/rke2-patcher/tests/docker"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+)
+
+const (
+	trivyVersion = "0.69.3"
 )
 
 var (
@@ -18,20 +23,21 @@ var (
 	tc *docker.TestConfig
 )
 
-func Test_DockerImageCVE(t *testing.T) {
+func Test_DockerImageCVELocal(t *testing.T) {
 	RegisterFailHandler(Fail)
 	flag.Parse()
-	RunSpecs(t, "RKE2 Patcher Docker Image CVE Suite")
+	RunSpecs(t, "RKE2 Patcher Docker Image CVE Local Suite")
 }
 
 var _ = Describe("Image CVE scan", Ordered, func() {
 	Context("Setup cluster", func() {
-		It("deploys an RKE2 server with default config", func() {
+		It("deploys trivy and RKE2 server with default config", func() {
 			var err error
 			tc, err = docker.NewTestConfig(*rke2Version, *patcherBin)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(tc.ProvisionServer()).To(Succeed())
+			Expect(tc.InstallTrivyLocally(trivyVersion)).To(Succeed())
 			Eventually(func() error {
 				return tc.CheckNodesReady(1)
 			}, "120s", "5s").Should(Succeed())
@@ -39,6 +45,11 @@ var _ = Describe("Image CVE scan", Ordered, func() {
 				g.Expect(tc.CheckDefaultDeploymentsAndDaemonSets()).To(Succeed())
 			}, "240s", "5s").Should(Succeed())
 			Expect(tc.EnsureScannerNamespace()).To(Succeed())
+			Eventually(func(g Gomega) {
+				output, err := tc.CheckTrivyVersion()
+				Expect(err).NotTo(HaveOccurred(), output)
+				Expect(output).To(ContainSubstring("Version: " + trivyVersion))
+			}, "60s", "5s").Should(Succeed())
 		})
 	})
 
@@ -56,9 +67,11 @@ var _ = Describe("Image CVE scan", Ordered, func() {
 		for _, component := range components {
 			component := component
 			It("shows CVEs for "+component, func() {
+				os.Setenv("RKE2_PATCHER_CVE_MODE", "local")
+				os.Setenv("PATH", "/usr/local/bin:"+os.Getenv("PATH"))
 				output, err := tc.RunImageCVE(component)
 				Expect(err).NotTo(HaveOccurred(), output)
-				Expect(output).To(ContainSubstring("scanner: trivy-job"))
+				Expect(output).To(ContainSubstring("scanner: trivy"))
 				Expect(output).To(ContainSubstring("component: " + component))
 				Expect(output).To(ContainSubstring("CVEs ("), output)
 				Expect(strings.Contains(output, "CVEs: none")).To(BeFalse(), output)
