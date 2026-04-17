@@ -54,7 +54,9 @@ func BuildHelmChartConfig(componentName string, defaultChartConfigName string, i
 	helmChartConfigFile := defaultChartConfigName + "-config-rke2-patcher.yaml"
 
 	filePath := filepath.Join(manifestsDir, helmChartConfigFile)
-	valuesContent := renderValuesContent(componentName, defaultChartConfigName, imageName, imageTag)
+	// Always strip registry prefix from imageName to avoid double registry when system-default-registry is set
+	repo := imageRepositoryWithoutRegistry(imageName)
+	valuesContent := renderValuesContent(componentName, defaultChartConfigName, repo, imageTag)
 	content := renderHelmChartConfig(defaultChartConfigName, defaultNamespace, valuesContent)
 
 	return filePath, content, valuesContent
