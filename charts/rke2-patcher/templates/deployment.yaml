@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rke2-patcher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rke2-patcher
+  template:
+    metadata:
+      labels:
+        app: rke2-patcher
+    spec:
+      serviceAccountName: rke2-patcher
+      containers:
+        - name: rke2-patcher
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          args: []

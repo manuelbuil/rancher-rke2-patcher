@@ -1,0 +1,10 @@
+image:
+  repository: manuelbuil/rke2-patcher
+  tag: latest
+  pullPolicy: IfNotPresent
+
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
