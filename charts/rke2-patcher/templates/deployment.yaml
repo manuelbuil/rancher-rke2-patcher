@@ -13,6 +13,8 @@ spec:
         app: rke2-patcher
     spec:
       serviceAccountName: rke2-patcher
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: "true"
       containers:
         - name: rke2-patcher
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

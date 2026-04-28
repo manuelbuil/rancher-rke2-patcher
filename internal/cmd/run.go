@@ -164,12 +164,9 @@ func runImagePatch(component components.Component, options imagePatchOptions) er
 	if err != nil {
 		return fmt.Errorf("failed to query HelmChart for prime check: %w", err)
 	}
-	fmt.Println("[DEBUG] HelmChart objects found for prime check:")
 	primeOk := false
 	for _, hc := range hcs {
-		fmt.Printf("[DEBUG] Name: %s, Namespace: %s\n[DEBUG] JSON Content:\n%s\n", hc.Name, hc.Namespace, hc.Content)
 		ok, err := kube.ExtractPrimeEnabledFromHelmChart(hc.Content)
-		fmt.Printf("[DEBUG] ExtractPrimeEnabledFromHelmChart result: ok=%v, err=%v\n", ok, err)
 		if err == nil && ok {
 			primeOk = true
 			break

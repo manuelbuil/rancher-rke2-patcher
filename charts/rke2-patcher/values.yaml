@@ -1,6 +1,6 @@
 image:
-  repository: manuelbuil/rke2-patcher
-  tag: latest
+  repository: mbuilsuse/rke2-patcher
+  tag: v0.0.1
   pullPolicy: IfNotPresent
 
 resources: {}

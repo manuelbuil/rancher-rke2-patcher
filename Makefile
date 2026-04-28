@@ -1,7 +1,7 @@
 BINARY ?= rke2-patcher
 COMPONENT ?= traefik
 
-.PHONY: help build version image-cve image-list image-patch test-docker-default test-docker-calico-traefik
+.PHONY: help build version image-cve image-list image-patch test-docker-default test-docker-calico-traefik docker-build
 
 help:
 	@echo "Targets:"
@@ -45,3 +45,8 @@ test-reconcile: build
 
 test-docker-image-cve-local: build
 	go test -v -timeout=80m ./tests/docker/image_cve_local/image_cve_local_test.go -ginkgo.v -rke2Version v1.35.3+rke2r3 -patcherBin ./$(BINARY)
+
+VERSION ?= $(shell grep '^const version' internal/cmd/app.go | cut -d '"' -f2)
+
+docker-build:
+	docker build -t mbuilsuse/rke2-patcher:$(VERSION) .
