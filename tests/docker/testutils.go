@@ -397,10 +397,6 @@ func (config *TestConfig) EnsureScannerNamespace() error {
 
 func (config *TestConfig) RunImageCVE(component string) (string, error) {
 
-	if err := config.CopyPatcherBinaryToServer(); err != nil {
-		return "", err
-	}
-
 	command := fmt.Sprintf(
 		"KUBECONFIG=/etc/rancher/rke2/rke2.yaml %s image-cve %s",
 		nodePatcherBinaryPath,
@@ -415,9 +411,6 @@ func (config *TestConfig) RunImageCVE(component string) (string, error) {
 }
 
 func (config *TestConfig) RunImageList(component string, withCVEs bool) (string, error) {
-	if err := config.CopyPatcherBinaryToServer(); err != nil {
-		return "", err
-	}
 
 	args := []string{"image-list"}
 	if withCVEs {
@@ -438,10 +431,6 @@ func (config *TestConfig) RunImageList(component string, withCVEs bool) (string,
 }
 
 func (config *TestConfig) RunImagePatch(component string, dryRun bool) (string, error) {
-	if err := config.CopyPatcherBinaryToServer(); err != nil {
-		return "", err
-	}
-
 	args := []string{"image-patch"}
 	if dryRun {
 		args = append(args, "--dry-run")
@@ -462,10 +451,6 @@ func (config *TestConfig) RunImagePatch(component string, dryRun bool) (string, 
 }
 
 func (config *TestConfig) RunImageReconcile(component string, dryRun bool) (string, error) {
-	if err := config.CopyPatcherBinaryToServer(); err != nil {
-		return "", err
-	}
-
 	args := []string{"image-reconcile"}
 	if dryRun {
 		args = append(args, "--dry-run")
