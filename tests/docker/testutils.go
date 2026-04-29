@@ -573,6 +573,9 @@ func (config *TestConfig) waitForKubeconfig(timeout time.Duration) error {
 
 // UpgradeRKE2Binary downloads and installs a new rke2 binary, makes it executable, and restarts the rke2-server.
 func (config *TestConfig) UpgradeRKE2Binary(upgradeURL string) error {
+	if out, err := config.Server.RunCmdOnNode("systemctl stop rke2-server"); err != nil {
+		return fmt.Errorf("failed to stop rke2-server: %s: %w", out, err)
+	}
 	if out, err := config.Server.RunCmdOnNode("curl -L -o /usr/local/bin/rke2 " + upgradeURL); err != nil {
 		return fmt.Errorf("failed to download rke2: %s: %w", out, err)
 	}
