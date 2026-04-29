@@ -64,11 +64,11 @@ var _ = Describe("Default components image-patch", Ordered, func() {
 		})
 
 		It("waits for daemonset rke2-flannel to roll out", func() {
-			Expect(tc.WaitForDaemonSetReady("kube-system", "kube-flannel-ds", rolloutTimeout)).To(Succeed())
+			Expect(tc.CheckResourcesReady(nil, []string{"kube-flannel-ds", "rke2-traefik"}, rolloutTimeout.String())).To(Succeed())
 		})
 
 		It("waits for daemonset rke2-traefik to roll out", func() {
-			Expect(tc.WaitForDaemonSetReady("kube-system", "rke2-traefik", rolloutTimeout)).To(Succeed())
+			Expect(tc.CheckResourcesReady(nil, []string{"rke2-traefik"}, rolloutTimeout.String())).To(Succeed())
 		})
 
 		It("verifies rke2-flannel image tag", func() {

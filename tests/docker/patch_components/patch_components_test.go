@@ -73,7 +73,7 @@ var _ = Describe("Default components image-patch", Ordered, func() {
 		})
 
 		It("waits for daemonset rke2-canal to roll out", func() {
-			Expect(tc.WaitForDaemonSetReady("kube-system", "rke2-canal", rolloutTimeout)).To(Succeed())
+			Expect(tc.CheckResourcesReady(nil, []string{"rke2-canal"}, rolloutTimeout.String())).To(Succeed())
 		})
 
 		It("patches rke2-canal-calico and merges with existing flannel patch", func() {
@@ -91,7 +91,7 @@ var _ = Describe("Default components image-patch", Ordered, func() {
 		})
 
 		It("waits for daemonset rke2-canal to roll out", func() {
-			Expect(tc.WaitForDaemonSetReady("kube-system", "rke2-canal", rolloutTimeout)).To(Succeed())
+			Expect(tc.CheckResourcesReady(nil, []string{"rke2-canal"}, rolloutTimeout.String())).To(Succeed())
 		})
 	})
 
@@ -111,7 +111,7 @@ var _ = Describe("Default components image-patch", Ordered, func() {
 		})
 
 		It("waits for deployments rke2-coredns-rke2-coredns and rke2-coredns-rke2-coredns-autoscaler to roll out", func() {
-			Expect(tc.WaitForDeploymentReady("kube-system", "rke2-coredns-rke2-coredns", rolloutTimeout)).To(Succeed())
+			Expect(tc.CheckResourcesReady([]string{"rke2-coredns-rke2-coredns", "rke2-coredns-rke2-coredns-autoscaler"}, nil, rolloutTimeout.String())).To(Succeed())
 		})
 
 
@@ -123,7 +123,7 @@ var _ = Describe("Default components image-patch", Ordered, func() {
 		})
 
 		It("waits for deployment rke2-coredns-rke2-coredns-autoscaler to roll out", func() {
-			Expect(tc.WaitForDeploymentReady("kube-system", "rke2-coredns-rke2-coredns-autoscaler", rolloutTimeout)).To(Succeed())
+			Expect(tc.CheckResourcesReady([]string{"rke2-coredns-rke2-coredns-autoscaler"}, nil, rolloutTimeout.String())).To(Succeed())
 		})
 
 		It("verifies rke2-coredns-cluster-autoscaler image tag", func() {
@@ -146,7 +146,7 @@ var _ = Describe("Default components image-patch", Ordered, func() {
 		})
 
 		It("waits for deployments rke2-metrics-server to roll out", func() {
-			Expect(tc.WaitForDeploymentReady("kube-system", "rke2-metrics-server", rolloutTimeout)).To(Succeed())
+			Expect(tc.CheckResourcesReady([]string{"rke2-metrics-server"}, nil, rolloutTimeout.String())).To(Succeed())
 		})
 
 		It("verifies rke2-metrics-server image tag", func() {
@@ -166,7 +166,7 @@ var _ = Describe("Default components image-patch", Ordered, func() {
 		})
 
 		It("waits for daemonset rke2-ingress-nginx-controller to roll out", func() {
-			Expect(tc.WaitForDaemonSetReady("kube-system", "rke2-ingress-nginx-controller", rolloutTimeout)).To(Succeed())
+			Expect(tc.CheckResourcesReady(nil, []string{"rke2-ingress-nginx-controller"}, rolloutTimeout.String())).To(Succeed())
 		})
 
 		It("verifies rke2-ingress-nginx image tag", func() {

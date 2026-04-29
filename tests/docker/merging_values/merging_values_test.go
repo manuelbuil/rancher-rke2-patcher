@@ -77,7 +77,7 @@ var _ = Describe("Default components image-patch", Ordered, func() {
 		})
 
 		It("waits for daemonset rke2-traefik to roll out", func() {
-			Expect(tc.WaitForDaemonSetReady("kube-system", "rke2-traefik", rolloutTimeout)).To(Succeed())
+			Expect(tc.CheckResourcesReady(nil, []string{"rke2-traefik"}, rolloutTimeout.String())).To(Succeed())
 		})
 
 		It("verifies rke2-traefik image tag", func() {
@@ -104,7 +104,7 @@ var _ = Describe("Default components image-patch", Ordered, func() {
 
 	Context("Reconcile rke2-traefik image", func() {
 		It("applies image-reconcile to rke2-traefik and checks image is reverted to previous", func() {
-			Expect(tc.WaitForDaemonSetReady("kube-system", "rke2-traefik", rolloutTimeout)).To(Succeed())
+			Expect(tc.CheckResourcesReady(nil, []string{"rke2-traefik"}, rolloutTimeout.String())).To(Succeed())
 			tag, err := tc.GetRunningImageTag("kube-system", "daemonset", "rke2-traefik", "rancher/hardened-traefik")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(tag).To(Equal(expectedTraefikTag))
@@ -118,7 +118,7 @@ var _ = Describe("Default components image-patch", Ordered, func() {
 
 		It("waits for daemonset rke2-traefik to roll out with previous image", func() {
 			Eventually(func(g Gomega) {
-				Expect(tc.WaitForDaemonSetReady("kube-system", "rke2-traefik", rolloutTimeout)).To(Succeed())
+				Expect(tc.CheckResourcesReady(nil, []string{"rke2-traefik"}, rolloutTimeout.String())).To(Succeed())
 				tag, err := tc.GetRunningImageTag("kube-system", "daemonset", "rke2-traefik", "rancher/hardened-traefik")
 				Expect(err).NotTo(HaveOccurred())
 				g.Expect(tag).To(Equal(previousTraefikTag))

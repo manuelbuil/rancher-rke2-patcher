@@ -193,120 +193,69 @@ func (config *TestConfig) CopyPatcherBinaryToServer() error {
 	return nil
 }
 
-func (config *TestConfig) WaitForDefaultComponents() error {
-	deployments := []string{
-		"rke2-coredns-rke2-coredns",
-		"rke2-coredns-rke2-coredns-autoscaler",
-		"rke2-metrics-server",
-		"rke2-snapshot-controller",
-	}
-	daemonsets := []string{
-		"rke2-canal",
-		"rke2-ingress-nginx-controller",
-	}
-
+// CheckResourcesReady checks rollout status for deployments and daemonsets with a given timeout string (e.g., "10s", "300s").
+func (config *TestConfig) CheckResourcesReady(deployments, daemonsets []string, timeout string) error {
 	for _, deployment := range deployments {
-		cmd := fmt.Sprintf("-n kube-system rollout status deployment/%s --timeout=300s", deployment)
+		cmd := fmt.Sprintf("-n kube-system rollout status deployment/%s --timeout=%s", deployment, timeout)
 		if out, err := config.Server.RunKubectl(cmd); err != nil {
-			return fmt.Errorf("deployment %s did not become ready: %s: %w", deployment, out, err)
+			return fmt.Errorf("deployment %s not ready: %s: %w", deployment, out, err)
 		}
 	}
-
 	for _, daemonset := range daemonsets {
-		cmd := fmt.Sprintf("-n kube-system rollout status daemonset/%s --timeout=300s", daemonset)
+		cmd := fmt.Sprintf("-n kube-system rollout status daemonset/%s --timeout=%s", daemonset, timeout)
 		if out, err := config.Server.RunKubectl(cmd); err != nil {
-			return fmt.Errorf("daemonset %s did not become ready: %s: %w", daemonset, out, err)
+			return fmt.Errorf("daemonset %s not ready: %s: %w", daemonset, out, err)
 		}
 	}
-
 	return nil
+}
+
+func (config *TestConfig) WaitForDefaultComponents() error {
+	return config.CheckResourcesReady(
+		[]string{"rke2-coredns-rke2-coredns", "rke2-coredns-rke2-coredns-autoscaler", "rke2-metrics-server", "rke2-snapshot-controller"},
+		[]string{"rke2-canal", "rke2-ingress-nginx-controller"},
+		"300s",
+	)
 }
 
 func (config *TestConfig) CheckDefaultDeploymentsAndDaemonSets() error {
-	deployments := []string{
-		"rke2-coredns-rke2-coredns",
-		"rke2-coredns-rke2-coredns-autoscaler",
-		"rke2-metrics-server",
-		"rke2-snapshot-controller",
-	}
-	daemonsets := []string{
-		"rke2-canal",
-		"rke2-ingress-nginx-controller",
-	}
-
-	for _, deployment := range deployments {
-		cmd := fmt.Sprintf("-n kube-system rollout status deployment/%s --timeout=10s", deployment)
-		if out, err := config.Server.RunKubectl(cmd); err != nil {
-			return fmt.Errorf("deployment %s not ready yet: %s: %w", deployment, out, err)
-		}
-	}
-
-	for _, daemonset := range daemonsets {
-		cmd := fmt.Sprintf("-n kube-system rollout status daemonset/%s --timeout=10s", daemonset)
-		if out, err := config.Server.RunKubectl(cmd); err != nil {
-			return fmt.Errorf("daemonset %s not ready yet: %s: %w", daemonset, out, err)
-		}
-	}
-
-	return nil
+	return config.CheckResourcesReady(
+		[]string{"rke2-coredns-rke2-coredns", "rke2-coredns-rke2-coredns-autoscaler", "rke2-metrics-server", "rke2-snapshot-controller"},
+		[]string{"rke2-canal", "rke2-ingress-nginx-controller"},
+		"10s",
+	)
 }
 
 func (config *TestConfig) CheckDefaultAndTraefikDeploymentsAndDaemonSets() error {
-	deployments := []string{
-		"rke2-coredns-rke2-coredns",
-		"rke2-coredns-rke2-coredns-autoscaler",
-		"rke2-metrics-server",
-		"rke2-snapshot-controller",
-	}
-	daemonsets := []string{
-		"rke2-canal",
-		"rke2-traefik",
-	}
-
-	for _, deployment := range deployments {
-		cmd := fmt.Sprintf("-n kube-system rollout status deployment/%s --timeout=10s", deployment)
-		if out, err := config.Server.RunKubectl(cmd); err != nil {
-			return fmt.Errorf("deployment %s not ready yet: %s: %w", deployment, out, err)
-		}
-	}
-
-	for _, daemonset := range daemonsets {
-		cmd := fmt.Sprintf("-n kube-system rollout status daemonset/%s --timeout=10s", daemonset)
-		if out, err := config.Server.RunKubectl(cmd); err != nil {
-			return fmt.Errorf("daemonset %s not ready yet: %s: %w", daemonset, out, err)
-		}
-	}
-
-	return nil
+	return config.CheckResourcesReady(
+		[]string{"rke2-coredns-rke2-coredns", "rke2-coredns-rke2-coredns-autoscaler", "rke2-metrics-server", "rke2-snapshot-controller"},
+		[]string{"rke2-canal", "rke2-traefik"},
+		"10s",
+	)
 }
 
 func (config *TestConfig) CheckFlannelTraefikDeploymentsAndDaemonSets() error {
-	if out, err := config.Server.RunKubectl("-n kube-system rollout status daemonset/kube-flannel-ds --timeout=10s"); err != nil {
-		return fmt.Errorf("daemonset kube-flannel-ds not ready yet: %s: %w", out, err)
-	}
-
-	if out, err := config.Server.RunKubectl("-n kube-system rollout status daemonset/rke2-traefik --timeout=10s"); err != nil {
-		return fmt.Errorf("daemonset rke2-traefik not ready yet: %s: %w", out, err)
-	}
-
-	return nil
+	return config.CheckResourcesReady(
+		nil,
+		[]string{"kube-flannel-ds", "rke2-traefik"},
+		"10s",
+	)
 }
 
 // CheckNodeLocalDNS verifies that the node-local-dns DaemonSet is ready in kube-system namespace.
 func (config *TestConfig) CheckNodeLocalDNS() error {
-	cmd := "-n kube-system rollout status daemonset/node-local-dns --timeout=30s"
-	if out, err := config.Server.RunKubectl(cmd); err != nil {
-		return fmt.Errorf("daemonset node-local-dns not ready: %s: %w", out, err)
-	}
-	return nil
+	return config.CheckResourcesReady(
+		nil,
+		[]string{"node-local-dns"},
+		"30s",
+	)
 }
 
 // CheckTraefikGwAPI verifies rke2-traefik DaemonSet is ready and logs contain 'providerName=kubernetesgateway'.
 func (config *TestConfig) CheckTraefikGwAPI() error {
 	// Check DaemonSet readiness
-	cmd := "-n kube-system rollout status daemonset/rke2-traefik --timeout=30s"
-	if out, err := config.Server.RunKubectl(cmd); err != nil {
-		return fmt.Errorf("daemonset rke2-traefik not ready: %s: %w", out, err)
+	if err := config.CheckResourcesReady(nil, []string{"rke2-traefik"}, "30s"); err != nil {
+		return err
 	}
 
 	// Get pod names for rke2-traefik
@@ -366,24 +315,6 @@ func (config *TestConfig) CheckNodesReady(expectedNodes int) error {
 		}
 	}
 
-	return nil
-}
-
-func (config *TestConfig) WaitForDeploymentReady(namespace, name string, timeout time.Duration) error {
-	timeoutArg := fmt.Sprintf("%ds", int(timeout.Seconds()))
-	cmd := fmt.Sprintf("-n %s rollout status deployment/%s --timeout=%s", namespace, name, timeoutArg)
-	if out, err := config.Server.RunKubectl(cmd); err != nil {
-		return fmt.Errorf("deployment %s/%s did not become ready: %s: %w", namespace, name, out, err)
-	}
-	return nil
-}
-
-func (config *TestConfig) WaitForDaemonSetReady(namespace, name string, timeout time.Duration) error {
-	timeoutArg := fmt.Sprintf("%ds", int(timeout.Seconds()))
-	cmd := fmt.Sprintf("-n %s rollout status daemonset/%s --timeout=%s", namespace, name, timeoutArg)
-	if out, err := config.Server.RunKubectl(cmd); err != nil {
-		return fmt.Errorf("daemonset %s/%s did not become ready: %s: %w", namespace, name, out, err)
-	}
 	return nil
 }
 
@@ -675,5 +606,3 @@ func portFree(port int) bool {
 	_ = listener.Close()
 	return true
 }
-
-

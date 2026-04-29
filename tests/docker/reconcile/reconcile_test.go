@@ -63,12 +63,11 @@ var _ = Describe("Default components image-patch", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), output)
 		})
 
-		It("waits for deployments rke2-coredns-rke2-coredns and rke2-coredns-rke2-coredns-autoscaler to roll out", func() {
-			Expect(tc.WaitForDeploymentReady("kube-system", "rke2-coredns-rke2-coredns", rolloutTimeout)).To(Succeed())
-		})
-
-		It("waits for daemonset rke2-traefik to roll out", func() {
-			Expect(tc.WaitForDaemonSetReady("kube-system", "rke2-traefik", rolloutTimeout)).To(Succeed())
+		It("waits for deployments rke2-coredns-rke2-coredns and rke2-coredns-rke2-coredns-autoscaler and daemonset rke2-traefik to roll out", func() {
+			deployments := []string{"rke2-coredns-rke2-coredns", "rke2-coredns-rke2-coredns-autoscaler"}
+			daemonsets := []string{"rke2-traefik"}
+			timeout := rolloutTimeout.String()
+			Expect(tc.CheckResourcesReady(deployments, daemonsets, timeout)).To(Succeed())
 		})
 
 		It("verifies rke2-coredns image tag", func() {
@@ -90,7 +89,7 @@ var _ = Describe("Default components image-patch", Ordered, func() {
 
 	Context("Reconcile rke2-coredns image", func() {
 		It("applies image-reconcile to rke2-coredns and checks image is reverted to previous", func() {
-			Expect(tc.WaitForDeploymentReady("kube-system", "rke2-coredns-rke2-coredns", rolloutTimeout)).To(Succeed())
+			Expect(tc.CheckResourcesReady([]string{"rke2-coredns-rke2-coredns"}, nil, rolloutTimeout.String())).To(Succeed())
 			tag, err := tc.GetRunningImageTag("kube-system", "deployment", "rke2-coredns-rke2-coredns", "rancher/hardened-coredns")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(tag).To(Equal(expectedCoreDNSTag))
@@ -104,7 +103,7 @@ var _ = Describe("Default components image-patch", Ordered, func() {
 
 		It("waits for deployment rke2-coredns to roll out with previous image", func() {
 			Eventually(func(g Gomega) {
-				Expect(tc.WaitForDeploymentReady("kube-system", "rke2-coredns-rke2-coredns", rolloutTimeout)).To(Succeed())
+				Expect(tc.CheckResourcesReady([]string{"rke2-coredns-rke2-coredns"}, nil, rolloutTimeout.String())).To(Succeed())
 				tag, err := tc.GetRunningImageTag("kube-system", "deployment", "rke2-coredns-rke2-coredns", "rancher/hardened-coredns")
 				Expect(err).NotTo(HaveOccurred())
 				g.Expect(tag).To(Equal(previousCoreDNSTag))
