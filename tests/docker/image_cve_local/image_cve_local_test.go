@@ -30,6 +30,12 @@ func Test_DockerImageCVELocal(t *testing.T) {
 }
 
 var _ = Describe("Image CVE scan", Ordered, func() {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("EXEC_MODE")), "pod") {
+		BeforeAll(func() {
+			Skip("image_cve_local suite is not supported with EXEC_MODE=pod: local scanners are not available in patcher pod image")
+		})
+	}
+
 	Context("Setup cluster", func() {
 		It("deploys trivy and RKE2 server with default config", func() {
 			var err error

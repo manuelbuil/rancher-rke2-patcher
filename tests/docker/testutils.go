@@ -14,11 +14,21 @@ import (
 
 const scannerNamespace = "rke2-patcher"
 const nodePatcherBinaryPath = "/usr/local/bin/rke2-patcher-test"
+const podPatcherBinaryPath = "/usr/local/bin/rke2-patcher"
+const patcherNamespace = "rke2-patcher"
+const patcherReleaseName = "rke2-patcher"
+const patcherImageRepository = "mbuilsuse/rke2-patcher"
+const nodePatcherImageTarballPath = "/var/lib/rancher/rke2/agent/images/rke2-patcher-test.tar"
+const execModeEnvName = "EXEC_MODE"
+const execModeBinary = "binary"
+const execModePod = "pod"
 
 type TestConfig struct {
 	TestDir        string
 	KubeconfigFile string
 	PatcherBinary  string
+	ExecMode       string
+	PatcherImage   string
 	RKE2Version    string
 	ServerConfig   string
 	Server         DockerNode
@@ -33,13 +43,26 @@ func NewTestConfig(version string, patcherBinary string) (*TestConfig, error) {
 	if strings.TrimSpace(version) == "" {
 		return nil, fmt.Errorf("rke2 version cannot be empty")
 	}
-	if strings.TrimSpace(patcherBinary) == "" {
-		return nil, fmt.Errorf("patcher binary path cannot be empty")
+
+	execMode := strings.ToLower(strings.TrimSpace(os.Getenv(execModeEnvName)))
+	if execMode == "" {
+		execMode = execModeBinary
+	}
+	if execMode != execModeBinary && execMode != execModePod {
+		return nil, fmt.Errorf("invalid %s value %q: expected %s or %s", execModeEnvName, execMode, execModeBinary, execModePod)
 	}
 
-	resolvedBinary, err := resolvePatcherBinaryPath(patcherBinary)
-	if err != nil {
-		return nil, err
+	resolvedBinary := ""
+	if execMode == execModeBinary {
+		if strings.TrimSpace(patcherBinary) == "" {
+			return nil, fmt.Errorf("patcher binary path cannot be empty")
+		}
+
+		var err error
+		resolvedBinary, err = resolvePatcherBinaryPath(patcherBinary)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	tempDir, err := os.MkdirTemp("", "rke2-patcher-docker-test-")
@@ -50,6 +73,7 @@ func NewTestConfig(version string, patcherBinary string) (*TestConfig, error) {
 	return &TestConfig{
 		TestDir:       tempDir,
 		PatcherBinary: resolvedBinary,
+		ExecMode:      execMode,
 		RKE2Version:   version,
 	}, nil
 }
@@ -67,26 +91,15 @@ func resolvePatcherBinaryPath(patcherBinary string) (string, error) {
 		return trimmed, nil
 	}
 
-	workingDir, err := os.Getwd()
+	// Assume tests are run from the project root; resolve relative to cwd.
+	abs, err := filepath.Abs(trimmed)
 	if err != nil {
-		return "", fmt.Errorf("failed to get working directory while resolving patcher binary: %w", err)
+		return "", fmt.Errorf("failed to resolve patcher binary path: %w", err)
 	}
-
-	currentDir := workingDir
-	for {
-		candidate := filepath.Join(currentDir, trimmed)
-		if _, err := os.Stat(candidate); err == nil {
-			return filepath.Abs(candidate)
-		}
-
-		parentDir := filepath.Dir(currentDir)
-		if parentDir == currentDir {
-			break
-		}
-		currentDir = parentDir
+	if _, err := os.Stat(abs); err != nil {
+		return "", fmt.Errorf("patcher binary %q not found: %w", abs, err)
 	}
-
-	return "", fmt.Errorf("patcher binary %q not found from working directory %q or any parent directory", trimmed, workingDir)
+	return abs, nil
 }
 
 func (config *TestConfig) InstallTrivyLocally(version string) error {
@@ -169,11 +182,106 @@ func (config *TestConfig) ProvisionServer() error {
 		return err
 	}
 
-	if err := config.CopyPatcherBinaryToServer(); err != nil {
-		return err
+	if config.ExecMode == execModeBinary {
+		if err := config.CopyPatcherBinaryToServer(); err != nil {
+			return err
+		}
+	}
+
+	if config.ExecMode == execModePod {
+		if err := config.PreparePatcherPodExecution(); err != nil {
+			return err
+		}
 	}
 
 	return nil
+}
+
+func (config *TestConfig) PreparePatcherPodExecution() error {
+	imageRef, err := config.BuildPatcherImage()
+	if err != nil {
+		return err
+	}
+
+	if err := config.ImportPatcherImageTarball(imageRef); err != nil {
+		return err
+	}
+
+	if err := config.InstallPatcherChart(imageRef); err != nil {
+		return err
+	}
+
+	if out, err := config.Server.RunKubectl(fmt.Sprintf("-n %s rollout status deployment/%s --timeout=180s", patcherNamespace, patcherReleaseName)); err != nil {
+		return fmt.Errorf("failed waiting for patcher deployment rollout: %s: %w", out, err)
+	}
+
+	return nil
+}
+
+func (config *TestConfig) BuildPatcherImage() (string, error) {
+	imageRef := patcherImageRepository + ":test"
+	if out, err := RunCommand("make build-image VERSION=test"); err != nil {
+		return "", fmt.Errorf("failed to build patcher image %s: %s: %w", imageRef, out, err)
+	}
+
+	config.PatcherImage = imageRef
+	return imageRef, nil
+}
+
+func (config *TestConfig) ImportPatcherImageTarball(imageRef string) error {
+	tarPath := filepath.Join(config.TestDir, "rke2-patcher-image.tar")
+	saveCmd := fmt.Sprintf("docker save -o %q %s", tarPath, imageRef)
+	if out, err := RunCommand(saveCmd); err != nil {
+		return fmt.Errorf("failed to save image tarball %s: %s: %w", imageRef, out, err)
+	}
+
+	if out, err := config.Server.RunCmdOnNode("mkdir -p /var/lib/rancher/rke2/agent/images"); err != nil {
+		return fmt.Errorf("failed to prepare image import directory: %s: %w", out, err)
+	}
+
+	copyCmd := fmt.Sprintf("docker cp %q %s:%s", tarPath, config.Server.Name, nodePatcherImageTarballPath)
+	if out, err := RunCommand(copyCmd); err != nil {
+		return fmt.Errorf("failed to copy image tarball into server: %s: %w", out, err)
+	}
+
+	return nil
+}
+
+func (config *TestConfig) InstallPatcherChart(imageRef string) error {
+	repository, tag, err := splitImageRef(imageRef)
+	if err != nil {
+		return err
+	}
+
+	helmCmd := fmt.Sprintf(
+		"helm upgrade --install %s charts/rke2-patcher --kubeconfig %q --namespace %s --create-namespace --set image.repository=%q --set image.tag=%q --set image.pullPolicy=IfNotPresent --wait --timeout 180s",
+		patcherReleaseName,
+		config.KubeconfigFile,
+		patcherNamespace,
+		repository,
+		tag,
+	)
+
+	if out, err := RunCommand(helmCmd); err != nil {
+		return fmt.Errorf("failed to install patcher chart: %s: %w", out, err)
+	}
+
+	return nil
+}
+
+func splitImageRef(imageRef string) (string, string, error) {
+	trimmed := strings.TrimSpace(imageRef)
+	if trimmed == "" {
+		return "", "", fmt.Errorf("image reference cannot be empty")
+	}
+
+	lastSlash := strings.LastIndex(trimmed, "/")
+	lastColon := strings.LastIndex(trimmed, ":")
+	if lastColon <= lastSlash {
+		return "", "", fmt.Errorf("image reference %q does not contain a tag", imageRef)
+	}
+
+	return trimmed[:lastColon], trimmed[lastColon+1:], nil
 }
 
 func (config *TestConfig) CopyPatcherBinaryToServer() error {
@@ -327,14 +435,7 @@ func (config *TestConfig) EnsureScannerNamespace() error {
 }
 
 func (config *TestConfig) RunImageCVE(component string) (string, error) {
-
-	command := fmt.Sprintf(
-		"KUBECONFIG=/etc/rancher/rke2/rke2.yaml %s image-cve %s",
-		nodePatcherBinaryPath,
-		component,
-	)
-
-	out, err := config.Server.RunCmdOnNode(command)
+	out, err := config.runPatcherCommand([]string{"image-cve", component})
 	if err != nil {
 		return out, fmt.Errorf("image-cve failed for %s: %w", component, err)
 	}
@@ -348,13 +449,7 @@ func (config *TestConfig) RunImageList(component string, withCVEs bool) (string,
 		args = append(args, "--with-cves")
 	}
 	args = append(args, component)
-	command := fmt.Sprintf(
-		"KUBECONFIG=/etc/rancher/rke2/rke2.yaml %s %s",
-		nodePatcherBinaryPath,
-		strings.Join(args, " "),
-	)
-
-	out, err := config.Server.RunCmdOnNode(command)
+	out, err := config.runPatcherCommand(args)
 	if err != nil {
 		return out, fmt.Errorf("image-list failed for %s: %w", component, err)
 	}
@@ -368,13 +463,7 @@ func (config *TestConfig) RunImagePatch(component string, dryRun bool) (string, 
 	}
 	args = append(args, "--yes")
 	args = append(args, component)
-	command := fmt.Sprintf(
-		"KUBECONFIG=/etc/rancher/rke2/rke2.yaml %s %s",
-		nodePatcherBinaryPath,
-		strings.Join(args, " "),
-	)
-
-	out, err := config.Server.RunCmdOnNode(command)
+	out, err := config.runPatcherCommand(args)
 	if err != nil {
 		return out, fmt.Errorf("image-patch failed for %s: %w", component, err)
 	}
@@ -388,17 +477,67 @@ func (config *TestConfig) RunImageReconcile(component string, dryRun bool) (stri
 	}
 	args = append(args, "--yes")
 	args = append(args, component)
-	command := fmt.Sprintf(
-		"KUBECONFIG=/etc/rancher/rke2/rke2.yaml %s %s",
-		nodePatcherBinaryPath,
-		strings.Join(args, " "),
-	)
-
-	out, err := config.Server.RunCmdOnNode(command)
+	out, err := config.runPatcherCommand(args)
 	if err != nil {
 		return out, fmt.Errorf("image-reconcile failed for %s: %w", component, err)
 	}
 	return out, nil
+}
+
+func (config *TestConfig) runPatcherCommand(args []string) (string, error) {
+	joinedArgs := strings.Join(args, " ")
+	envAssignments := patcherEnvAssignments()
+
+	switch config.ExecMode {
+	case execModeBinary:
+		commandParts := []string{"KUBECONFIG=/etc/rancher/rke2/rke2.yaml"}
+		if envAssignments != "" {
+			commandParts = append(commandParts, envAssignments)
+		}
+		commandParts = append(commandParts, nodePatcherBinaryPath, joinedArgs)
+		return config.Server.RunCmdOnNode(strings.Join(commandParts, " "))
+	case execModePod:
+		patcherInvocation := podPatcherBinaryPath + " " + joinedArgs
+		if envAssignments != "" {
+			patcherInvocation = "env " + envAssignments + " " + patcherInvocation
+		}
+		kubectlArgs := fmt.Sprintf("-n %s exec deployment/%s -- %s", patcherNamespace, patcherReleaseName, patcherInvocation)
+		return config.Server.RunKubectl(kubectlArgs)
+	default:
+		return "", fmt.Errorf("unsupported exec mode %q", config.ExecMode)
+	}
+}
+
+func patcherEnvAssignments() string {
+	keys := []string{
+		"RKE2_PATCHER_REGISTRY",
+		"RKE2_PATCHER_CVE_MODE",
+		"RKE2_PATCHER_CVE_NAMESPACE",
+		"RKE2_PATCHER_CVE_SCANNER_IMAGE",
+		"RKE2_PATCHER_CVE_JOB_TIMEOUT",
+	}
+
+	assignments := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value, found := os.LookupEnv(key)
+		if !found {
+			continue
+		}
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		assignments = append(assignments, fmt.Sprintf("%s=%s", key, shellQuote(trimmed)))
+	}
+
+	return strings.Join(assignments, " ")
+}
+
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 // GetRunningImageTag returns the image tag for the container in workloadKind/workloadName
