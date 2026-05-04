@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 
 const (
 	registryEnvName         = "RKE2_PATCHER_REGISTRY"
-	dataDirEnvName          = "RKE2_PATCHER_DATA_DIR"
 	defaultRegistryHost     = "registry.rancher.com"
 	cveModeEnvName          = "RKE2_PATCHER_CVE_MODE"
 	defaultCVEMode          = "cluster"
@@ -24,7 +22,6 @@ const (
 	defaultCVEScannerImage  = "aquasec/trivy:0.69.3"
 	cveJobTimeoutEnvName    = "RKE2_PATCHER_CVE_JOB_TIMEOUT"
 	defaultCVEJobTimeout    = 8 * time.Minute
-	defaultRKE2DataDir      = "/var/lib/rancher/rke2"
 )
 
 type configEntry struct {
@@ -68,7 +65,6 @@ func collectConfigEntries() ([]configEntry, error) {
 		return nil, err
 	}
 
-	dataDir, dataDirSource := envOr(dataDirEnvName, defaultRKE2DataDir)
 	cveNamespace, cveNamespaceSource := envOr(cveNamespaceEnvName, defaultCVENamespaceName)
 	cveScannerImage, cveScannerImageSource := envOr(cveScannerImageEnvName, defaultCVEScannerImage)
 
@@ -78,8 +74,6 @@ func collectConfigEntries() ([]configEntry, error) {
 		{Key: "cve_namespace", Effective: cveNamespace, Default: defaultCVENamespaceName, Source: cveNamespaceSource},
 		{Key: "cve_scanner_image", Effective: cveScannerImage, Default: defaultCVEScannerImage, Source: cveScannerImageSource},
 		{Key: "cve_job_timeout", Effective: jobTimeout.String(), Default: defaultCVEJobTimeout.String(), Source: timeoutSource},
-		{Key: "data_dir", Effective: dataDir, Default: defaultRKE2DataDir, Source: dataDirSource},
-		{Key: "manifests_dir", Effective: filepath.Join(dataDir, "server", "manifests"), Default: filepath.Join(defaultRKE2DataDir, "server", "manifests"), Source: dataDirSource},
 		{Key: "rke2_patcher_state_configmap", Effective: kube.StateConfigMapName, Default: kube.StateConfigMapName, Source: "default"},
 	}
 

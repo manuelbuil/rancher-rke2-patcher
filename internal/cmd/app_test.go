@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -71,53 +69,6 @@ func TestRunImagePatchCommandRejectsExtraArguments(t *testing.T) {
 	if exitErr.ExitCode() != 2 {
 		t.Fatalf("unexpected exit code: %d", exitErr.ExitCode())
 	}
-}
-
-func TestEnsureManifestsDirectoryExists(t *testing.T) {
-	t.Run("existing directory", func(t *testing.T) {
-		tempDir := t.TempDir()
-		filePath := filepath.Join(tempDir, "manifest.yaml")
-
-		if err := ensureManifestsDirectoryExists(filePath); err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
-	})
-
-	t.Run("missing directory", func(t *testing.T) {
-		tempDir := t.TempDir()
-		filePath := filepath.Join(tempDir, "missing", "manifest.yaml")
-
-		err := ensureManifestsDirectoryExists(filePath)
-		if err == nil {
-			t.Fatalf("expected error, got nil")
-		}
-		if !strings.Contains(err.Error(), "does not exist") {
-			t.Fatalf("expected does not exist error, got %q", err.Error())
-		}
-		if !strings.Contains(err.Error(), "RKE2_PATCHER_DATA_DIR") {
-			t.Fatalf("expected suggestion to use RKE2_PATCHER_DATA_DIR, got %q", err.Error())
-		}
-	})
-
-	t.Run("manifests path is not a directory", func(t *testing.T) {
-		tempDir := t.TempDir()
-		notDir := filepath.Join(tempDir, "not-a-dir")
-		if err := os.WriteFile(notDir, []byte("x"), 0644); err != nil {
-			t.Fatalf("failed writing file: %v", err)
-		}
-
-		filePath := filepath.Join(notDir, "manifest.yaml")
-		err := ensureManifestsDirectoryExists(filePath)
-		if err == nil {
-			t.Fatalf("expected error, got nil")
-		}
-		if !strings.Contains(err.Error(), "is not a directory") {
-			t.Fatalf("expected not a directory error, got %q", err.Error())
-		}
-		if !strings.Contains(err.Error(), "RKE2_PATCHER_DATA_DIR") {
-			t.Fatalf("expected suggestion to use RKE2_PATCHER_DATA_DIR, got %q", err.Error())
-		}
-	})
 }
 
 func TestParseComparableTag(t *testing.T) {

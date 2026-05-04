@@ -40,6 +40,7 @@ make test-docker-image-list
 make test-docker-image-patcher
 ```
 
+
 ## Docker scenario tests (Ginkgo)
 
 The repository includes Docker end-to-end scenario tests, modeled after the RKE2 Docker test style:
@@ -48,20 +49,23 @@ The repository includes Docker end-to-end scenario tests, modeled after the RKE2
   - `tests/docker/default_components/default_components_test.go`
   - `tests/docker/flannel_traefik/flannel_traefik_test.go`
   - `tests/docker/patch_components/patch_components_test.go`
-- Shared harness: `tests/docker/testutils.go`
+  - `tests/docker/reconcile/reconcile_test.go`
+- Shared test harness: `tests/docker/testutils.go`
 - CI workflow: `.github/workflows/docker-tests.yaml`
 
-What this first scenario does:
+### Test Harness Improvements
 
-1. Deploys an RKE2 server in Docker with `v1.35.3+rke2r3` and standard configuration.
-2. Waits for the default core components to become ready.
-3. Runs `rke2-patcher image-cve` and verifies CVEs are reported for:
-  - `rke2-coredns`
-  - `rke2-coredns-cluster-autoscaler`
-  - `rke2-canal-flannel`
-  - `rke2-ingress-nginx`
-  - `rke2-metrics-server`
-  - `rke2-snapshot-controller`
+- All rollout status checks for Deployments and DaemonSets are now consolidated into a single helper: `CheckResourcesReady`.
+- All scenario-specific helpers (e.g., `CheckDefaultDeploymentsAndDaemonSets`, `CheckFlannelTraefikDeploymentsAndDaemonSets`, etc.) delegate to this generic function.
+- This makes the test code DRY, maintainable, and easy to extend for new scenarios.
+- The test harness provisions a real RKE2 server in Docker, applies configuration, and interacts with the cluster using `kubectl` via Docker exec.
+
+### Example scenario flow:
+
+1. Deploy an RKE2 server in Docker with a specified version and configuration.
+2. Wait for the default or scenario-specific core components to become ready using the consolidated helpers.
+3. Run `rke2-patcher` commands (e.g., `image-cve`, `image-list`, `image-patch`, `image-reconcile`) and verify results.
+4. Validate image tags, rollout status, and patch state as needed.
 
 Run locally:
 
@@ -85,7 +89,7 @@ rke2-patcher --config
 ```
 
 - Prints effective/default/source for relevant runtime config values.
-- Includes registry, scanner mode, scanner image, scanner namespace, timeout, manifests path, and RKE2 patcher state ConfigMap coordinates.
+- Includes registry, scanner mode, scanner image, scanner namespace, timeout, and RKE2 patcher state ConfigMap coordinates.
 
 ### 1) CVEs of current running image
 
@@ -143,13 +147,12 @@ rke2-patcher image-patch rke2-traefik --yes
 ```
 
 - Detects the current running image repository in-cluster.
-- Picks the next newer tag from `registry.rancher.com` and writes a `HelmChartConfig` manifest with that tag.
-- With `--dry-run`, prints the exact `HelmChartConfig` that would be written and does not write any file.
+- Picks the next newer tag from `registry.rancher.com` and applies a `HelmChartConfig` object with that tag via the Kubernetes API.
+- With `--dry-run`, prints the exact `HelmChartConfig` that would be applied and does not update cluster state.
 - Refuses to patch when current tag is already the newest available tag.
 - Refuses to patch when the target tag would move to a newer minor release.
 - Refuses to patch when the same component was already patched forward once for the current detected RKE2 version.
 - Refuses to patch when any stale patch state from a different RKE2 version still exists. In that case, run `rke2-patcher image-reconcile <component>` for each previously patched component before patching again.
-- Refuses to write if the target manifests directory does not exist and suggests setting `RKE2_PATCHER_DATA_DIR`.
 - If one or more `HelmChartConfig` objects already exist in the cluster for the same chart name and namespace, asks for confirmation before attempting a merge.
 - If merge is approved, prints the merged output in dry-run format and asks for a second confirmation before writing.
 - With `--yes` (or `-y`), those merge/apply confirmations are auto-approved for non-interactive runs (for example CI).
@@ -166,12 +169,12 @@ rke2-patcher image-reconcile rke2-traefik
 ```
 
 - `image-reconcile` requires a single `<component>` argument.
-- It only touches the `HelmChartConfig` file previously managed for that component.
+- It only touches the `HelmChartConfig` object previously managed for that component.
 - It first acts on state entries recorded for a different RKE2 version than the one currently running.
 - If no stale entries are found but a same-version patch exists for the component, it asks whether to revert that patch.
-- On approval, it removes only the patcher-managed image override keys from `valuesContent`, then writes the file back in place.
-- It does not delete the `HelmChartConfig` file; the file update lets RKE2 re-render the chart using bundled defaults.
-- After the file is updated successfully, the corresponding processed state entry for that component is removed.
+- On approval, it removes only the patcher-managed image override keys from `valuesContent`, then applies the updated `HelmChartConfig` object.
+- It does not delete the `HelmChartConfig`; the object update lets RKE2 re-render the chart using bundled defaults.
+- After the object is updated successfully, the corresponding processed state entry for that component is removed.
 - If multiple components were patched before the upgrade, run `image-reconcile <component>` once for each of them.
 
 Typical upgrade flow:
@@ -207,7 +210,7 @@ Typical upgrade flow:
 - Network access to the configured image registry endpoint (`RKE2_PATCHER_REGISTRY`, default `registry.rancher.com`).
 - For `image-cve` default mode (`RKE2_PATCHER_CVE_MODE=cluster`), Kubernetes access that allows creating and reading Jobs/Pods in the scan namespace.
 - For `image-patch`, Kubernetes access that allows reading/writing ConfigMaps in the state namespace (same namespace used by `RKE2_PATCHER_CVE_NAMESPACE`; default `rke2-patcher`).
-- For `image-reconcile`, access to the same patcher state ConfigMap is required, and the generated `HelmChartConfig` file must still be writable in the manifests directory.
+- For `image-reconcile`, access to the same patcher state ConfigMap is required, and the Kubernetes API permissions must allow updating `HelmChartConfig` objects.
 - Local scanner installation is optional and only needed when using local mode (`RKE2_PATCHER_CVE_MODE=local`):
   - `trivy`, or
   - `grype`
@@ -223,7 +226,7 @@ General tag-registry override:
   - Behavior: tag listing starts unauthenticated, then follows Bearer challenge flow only if the registry returns `401` with `WWW-Authenticate: Bearer ...`.
   - To use Docker Hub instead: `RKE2_PATCHER_REGISTRY=registry-1.docker.io` (all Rancher component images are mirrored there publicly).
 
-The `image-patch` command supports these overrides:
+The `image-patch` command supports these options and related inputs:
 
 - `--yes` / `-y`
   - Non-interactive mode for merge/apply confirmations when an existing `HelmChartConfig` is present.
@@ -233,11 +236,6 @@ The `image-patch` command supports these overrides:
   - Optional kubeconfig path used when service account auth is not available.
   - If multiple files are provided, the first entry is used.
   - Useful when running as a host binary on control-plane nodes.
-
-- `RKE2_PATCHER_DATA_DIR`
-  - RKE2 data directory used to derive the manifest output path.
-  - Default: `/var/lib/rancher/rke2`
-  - Effective manifests path: `<data-dir>/server/manifests`
 
 - Generated `HelmChartConfig` namespace
   - Hardcoded: `kube-system`
@@ -274,6 +272,5 @@ Patch-limit state storage (not configurable):
 Example:
 
 ```bash
-RKE2_PATCHER_DATA_DIR=/var/lib/rancher/rke2 \
 ./rke2-patcher image-patch rke2-traefik
 ```

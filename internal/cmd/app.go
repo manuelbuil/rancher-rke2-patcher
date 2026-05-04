@@ -219,7 +219,6 @@ func printUsage() {
 	fmt.Println("Environment variables:")
 	fmt.Println("  KUBECONFIG                         kubeconfig path (first file in list is used)")
 	fmt.Println("  RKE2_PATCHER_REGISTRY              registry base URL (default: registry.rancher.com)")
-	fmt.Println("  RKE2_PATCHER_DATA_DIR              path to RKE2 data directory")
 	fmt.Println("  RKE2_PATCHER_CVE_MODE              CVE scanner mode (cluster|local)")
 	fmt.Println("  RKE2_PATCHER_CVE_NAMESPACE         namespace for CVE jobs and patch-limit state ConfigMap")
 	fmt.Println("  RKE2_PATCHER_CVE_SCANNER_IMAGE     Trivy scanner image to use")

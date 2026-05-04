@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/manuelbuil/rke2-patcher/internal/components"
@@ -63,7 +62,7 @@ func generateStateWrite(componentName string, currentTag string, targetTag strin
 	}, nil
 }
 
-// persistPatchDecision attempts to persist the patch decision in the Kubernetes ConfigMap, 
+// persistPatchDecision attempts to persist the patch decision in the Kubernetes ConfigMap,
 // retrying on conflicts to handle concurrent updates
 func persistPatchDecision(decision patchStateWrite) error {
 	stateNamespace := strings.TrimSpace(decision.StateNamespace)
@@ -169,7 +168,7 @@ func staleEntryKeys(state patchState, currentVersion string) []string {
 	return keys
 }
 
-// removeEntriesFromState attempts to remove entries from the patch state in Kubernetes ConfigMap, 
+// removeEntriesFromState attempts to remove entries from the patch state in Kubernetes ConfigMap,
 // retrying on conflicts to handle concurrent updates
 func removeEntriesFromState(namespace string, keysToRemove []string) error {
 	for attempt := 0; attempt < 5; attempt++ {
@@ -195,26 +194,4 @@ func removeEntriesFromState(namespace string, keysToRemove []string) error {
 	}
 
 	return fmt.Errorf("failed to remove stale entries from patch state in ConfigMap %s/%s after retries", namespace, kube.StateConfigMapName)
-}
-
-// ensureManifestsDirectoryExists checks if the directory for the given file path exists and is a directory,
-func ensureManifestsDirectoryExists(filePath string) error {
-	manifestsDir := strings.TrimSpace(filepath.Dir(filePath))
-	if manifestsDir == "" {
-		return fmt.Errorf("failed to resolve manifests directory from output path %q; set RKE2_PATCHER_DATA_DIR (for example /var/lib/rancher/rke2)", filePath)
-	}
-
-	info, err := os.Stat(manifestsDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("manifests directory %q does not exist; set RKE2_PATCHER_DATA_DIR to point to the RKE2 data directory", manifestsDir)
-		}
-		return fmt.Errorf("failed to verify manifests directory %q: %w", manifestsDir, err)
-	}
-
-	if !info.IsDir() {
-		return fmt.Errorf("manifests path %q is not a directory; set RKE2_PATCHER_DATA_DIR to point to the RKE2 data directory", manifestsDir)
-	}
-
-	return nil
 }

@@ -10,7 +10,6 @@ func TestCollectConfigEntries_Defaults(t *testing.T) {
 	t.Setenv(cveNamespaceEnvName, "")
 	t.Setenv(cveScannerImageEnvName, "")
 	t.Setenv(cveJobTimeoutEnvName, "")
-	t.Setenv(dataDirEnvName, "")
 
 	entries, err := collectConfigEntries()
 	if err != nil {
@@ -57,7 +56,6 @@ func TestCollectConfigEntries_Overrides(t *testing.T) {
 	t.Setenv(cveNamespaceEnvName, "sec-scan")
 	t.Setenv(cveScannerImageEnvName, "scanner:1.2.3")
 	t.Setenv(cveJobTimeoutEnvName, "11m")
-	t.Setenv(dataDirEnvName, "/tmp/rke2")
 
 	entries, err := collectConfigEntries()
 	if err != nil {

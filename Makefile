@@ -54,5 +54,5 @@ test-docker-reconcile-upgrade: build
 
 VERSION ?= $(shell grep '^const version' internal/cmd/app.go | cut -d '"' -f2)
 
-docker-build:
+build-image:
 	docker build -t mbuilsuse/rke2-patcher:$(VERSION) .

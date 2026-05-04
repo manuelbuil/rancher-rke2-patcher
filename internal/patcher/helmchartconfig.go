@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"os"
 	"strings"
 
 	"dario.cat/mergo"
@@ -14,7 +13,6 @@ import (
 )
 
 const (
-	dataDirEnv  = "RKE2_PATCHER_DATA_DIR"
 	registryEnv = "RKE2_PATCHER_REGISTRY"
 
 	defaultNamespace    = "kube-system"
@@ -406,22 +404,6 @@ func renderValuesContent(componentName string, chartName string, imageName strin
 	return fmt.Sprintf(`    image: # change made by rke2-patcher
       repository: %s # change made by rke2-patcher
       tag: %s # change made by rke2-patcher`, imageName, imageTag)
-}
-
-// configuredRegistryHost determines the registry host to use based on the RKE2_PATCHER_REGISTRY environment variable,
-// with fallback to default if not set or invalid
-func configuredRegistryHost() string {
-	envVar := strings.TrimSpace(os.Getenv(registryEnv))
-	if envVar == "" {
-		envVar = defaultRegistryHost
-	}
-
-	host := registryHostFromURL(envVar)
-	if strings.TrimSpace(host) == "" {
-		return defaultRegistryHost
-	}
-
-	return host
 }
 
 // registryHostFromURL attempts to extract a registry host from a given string, which may be a full URL or just a hostname
