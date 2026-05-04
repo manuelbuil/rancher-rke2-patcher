@@ -1,8 +1,9 @@
 BINARY ?= rke2-patcher
 COMPONENT ?= traefik
 EXEC_MODE ?= binary
+IMAGE_BUNDLES_DIR ?= $(CURDIR)/tests/docker/airgap/bundles
 
-.PHONY: help build version image-cve image-list image-patch test-docker-default test-docker-calico-traefik docker-build
+.PHONY: help build version image-cve image-list image-patch test-docker-default test-docker-calico-traefik docker-build test-docker-airgap
 
 help:
 	@echo "Targets:"
@@ -14,6 +15,7 @@ help:
 	@echo "  make test-docker-image-cve EXEC_MODE=binary|pod"
 	@echo "  make test-docker-default"
 	@echo "  make test-docker-calico-traefik"
+	@echo "  make test-docker-airgap [IMAGE_BUNDLES_DIR=/path/to/bundles]  # default: tests/docker/airgap/bundles"
 
 build:
 	CGO_ENABLED=0 go build -o $(BINARY) .
@@ -53,6 +55,9 @@ test-docker-merging-values: build
 
 test-docker-reconcile-upgrade: build
 	EXEC_MODE=$(EXEC_MODE) go test -v -timeout=80m ./tests/docker/reconcile_upgrade/reconcile_upgrade_test.go -ginkgo.v -rke2Version v1.35.3+rke2r3 -patcherBin $(CURDIR)/$(BINARY)
+
+test-docker-airgap: build
+	EXEC_MODE=$(EXEC_MODE) go test -v -timeout=90m ./tests/docker/airgap/airgap_test.go -ginkgo.v -rke2Version v1.35.4+rke2r1 -patcherBin $(CURDIR)/$(BINARY) -imageBundlesDir $(IMAGE_BUNDLES_DIR)
 
 VERSION ?= $(shell grep '^const version' internal/cmd/app.go | cut -d '"' -f2)
 

@@ -25,15 +25,22 @@ const execModePod = "pod"
 const projectRootRelativeFromSuite = "../../.."
 
 type TestConfig struct {
-	TestDir        string
-	KubeconfigFile string
-	PatcherBinary  string
-	ExecMode       string
-	ProjectRoot    string
-	PatcherImage   string
-	RKE2Version    string
-	ServerConfig   string
-	Server         DockerNode
+	TestDir          string
+	KubeconfigFile   string
+	PatcherBinary    string
+	ExecMode         string
+	ProjectRoot      string
+	PatcherImage     string
+	RKE2Version      string
+	ServerConfig     string
+	RegistriesConfig string
+	Server           DockerNode
+	LocalRegistry    *LocalRegistry
+}
+
+type LocalRegistry struct {
+	Name string
+	Port int
 }
 
 type DockerNode struct {
@@ -129,6 +136,156 @@ func resolvePatcherBinaryPath(patcherBinary string, projectRoot string) (string,
 	return abs, nil
 }
 
+// StartLocalRegistry starts an unauthenticated registry:2 container on a free
+// port and records it in config.LocalRegistry for later cleanup.
+// The registry is exposed on the host at <port> (including 127.0.0.1:<port>) so
+// Docker containers (e.g., the RKE2 provisioned node) can reach it via the
+// bridge gateway address, typically 172.17.0.1:<port>.
+func (config *TestConfig) StartLocalRegistry() error {
+	port := getPort()
+	if port <= 0 {
+		return fmt.Errorf("failed to find a free port for local registry")
+	}
+
+	name := fmt.Sprintf("rke2-patcher-test-registry-%d", time.Now().UnixNano())
+	_, _ = RunCommand(fmt.Sprintf("docker rm -f %s", name))
+
+	run := fmt.Sprintf("docker run -d --name %s -p %d:5000 registry:2", name, port)
+	if out, err := RunCommand(run); err != nil {
+		return fmt.Errorf("failed to start local registry: %s: %w", out, err)
+	}
+
+	config.LocalRegistry = &LocalRegistry{Name: name, Port: port}
+	return nil
+}
+
+// LocalRegistryAddr returns the registry address reachable from inside Docker
+// containers on the default bridge network (172.17.0.1:<port>).
+func (config *TestConfig) LocalRegistryAddr() string {
+	if config.LocalRegistry == nil {
+		return ""
+	}
+	return fmt.Sprintf("172.17.0.1:%d", config.LocalRegistry.Port)
+}
+
+// LoadRKE2ImagesTarball loads a zstd-compressed RKE2 image tarball into the
+// local registry. It decompresses the archive, loads the images into the local
+// Docker daemon, then retags and pushes each image to registryAddr (e.g.
+// "127.0.0.1:5000"), stripping the original registry host prefix.
+func DownloadRKE2ImageTarball(rke2Version, bundleName, destinationDir string) (string, error) {
+	if strings.TrimSpace(rke2Version) == "" {
+		return "", fmt.Errorf("rke2 version cannot be empty")
+	}
+	if strings.TrimSpace(bundleName) == "" {
+		return "", fmt.Errorf("bundle name cannot be empty")
+	}
+	if strings.TrimSpace(destinationDir) == "" {
+		return "", fmt.Errorf("destination directory cannot be empty")
+	}
+
+	if err := os.MkdirAll(destinationDir, 0o755); err != nil {
+		return "", fmt.Errorf("failed to create destination directory %q: %w", destinationDir, err)
+	}
+
+	bundleURL := fmt.Sprintf("https://github.com/rancher/rke2/releases/download/%s/%s", rke2Version, bundleName)
+	destinationPath := filepath.Join(destinationDir, bundleName)
+
+	curlCmd := fmt.Sprintf("curl -fsSL --retry 3 --retry-delay 2 -o %q %q", destinationPath, bundleURL)
+	if out, err := RunCommand(curlCmd); err != nil {
+		return "", fmt.Errorf("failed to download RKE2 image tarball from %q: %s: %w", bundleURL, out, err)
+	}
+
+	return destinationPath, nil
+}
+
+func LoadRKE2ImagesTarball(zstTarPath, registryAddr string) error {
+	decompressed := zstTarPath + ".tar"
+	if out, err := RunCommand(fmt.Sprintf("zstd -d %q -o %q --force", zstTarPath, decompressed)); err != nil {
+		return fmt.Errorf("failed to decompress %s: %s: %w", zstTarPath, out, err)
+	}
+	defer os.Remove(decompressed)
+
+	out, err := RunCommand(fmt.Sprintf("docker load -i %q", decompressed))
+	if err != nil {
+		return fmt.Errorf("failed to load images from %s: %s: %w", decompressed, out, err)
+	}
+
+	// docker load prints lines like: "Loaded image: registry.rancher.com/rancher/hardened-coredns:v1.11.1-..."
+	var pushErrors []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Loaded image:") {
+			continue
+		}
+		origRef := strings.TrimSpace(strings.TrimPrefix(line, "Loaded image:"))
+		if origRef == "" {
+			continue
+		}
+
+		// Strip the first registry component: everything up to and including the
+		// first '/' that contains a '.' or ':' (i.e. a hostname component).
+		newRef := stripRegistryPrefix(origRef)
+		destRef := registryAddr + "/" + newRef
+
+		if tagOut, tagErr := RunCommand(fmt.Sprintf("docker tag %q %q", origRef, destRef)); tagErr != nil {
+			pushErrors = append(pushErrors, fmt.Sprintf("tag %s → %s: %s: %v", origRef, destRef, tagOut, tagErr))
+			continue
+		}
+		if pushOut, pushErr := RunCommand(fmt.Sprintf("docker push %q", destRef)); pushErr != nil {
+			pushErrors = append(pushErrors, fmt.Sprintf("push %s: %s: %v", destRef, pushOut, pushErr))
+		}
+	}
+
+	if len(pushErrors) > 0 {
+		return fmt.Errorf("failed to push some images: %s", strings.Join(pushErrors, "; "))
+	}
+	return nil
+}
+
+// stripRegistryPrefix removes the registry host from an image reference.
+// e.g. "registry.rancher.com/rancher/foo:tag" → "rancher/foo:tag"
+func stripRegistryPrefix(ref string) string {
+	parts := strings.SplitN(ref, "/", 2)
+	if len(parts) == 2 && (strings.Contains(parts[0], ".") || strings.Contains(parts[0], ":")) {
+		return parts[1]
+	}
+	return ref
+}
+
+// vexDownloadURL is the canonical source for the Rancher OpenVEX report.
+// It must stay in sync with internal/cve/scanner.go vexReportURL.
+const vexDownloadURL = "https://raw.githubusercontent.com/rancher/vexhub/refs/heads/main/reports/rancher.openvex.json"
+
+// DownloadVEXFile downloads the Rancher OpenVEX report to TestDir and returns
+// its local path.  Call StageVEXFile afterwards to copy it into the node.
+func (config *TestConfig) DownloadVEXFile() (string, error) {
+	destPath := filepath.Join(config.TestDir, "rancher.openvex.json")
+	curlCmd := fmt.Sprintf("curl -fsSL -o %q %s", destPath, vexDownloadURL)
+	if out, err := RunCommand(curlCmd); err != nil {
+		return "", fmt.Errorf("failed to download VEX file: %s: %w", out, err)
+	}
+	return destPath, nil
+}
+
+// StageVEXFile copies a VEX file from the local host into the node at the path
+// expected by the patcher's local CVE scanner:
+// $HOME/rke2-patcher-cache/vex/rancher.openvex.json
+// Staging the file prevents the scanner from attempting a download.
+func (config *TestConfig) StageVEXFile(localVEXPath string) error {
+	const remoteVEXDir = "/root/rke2-patcher-cache/vex"
+	const remoteVEXFile = remoteVEXDir + "/rancher.openvex.json"
+
+	if out, err := config.Server.RunCmdOnNode("mkdir -p " + remoteVEXDir); err != nil {
+		return fmt.Errorf("failed to create VEX cache directory: %s: %w", out, err)
+	}
+
+	copyCmd := fmt.Sprintf("docker cp %q %s:%s", localVEXPath, config.Server.Name, remoteVEXFile)
+	if out, err := RunCommand(copyCmd); err != nil {
+		return fmt.Errorf("failed to copy VEX file into server: %s: %w", out, err)
+	}
+	return nil
+}
+
 func (config *TestConfig) InstallTrivyLocally(version string) error {
 	installCmd := fmt.Sprintf("curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin v%s", version)
 	if out, err := config.Server.RunCmdOnNode(installCmd); err != nil {
@@ -195,6 +352,12 @@ func (config *TestConfig) ProvisionServer() error {
 
 	if err := config.writeServerConfig(mergedConfig); err != nil {
 		return err
+	}
+
+	if strings.TrimSpace(config.RegistriesConfig) != "" {
+		if err := config.writeRegistriesConfig(config.RegistriesConfig); err != nil {
+			return err
+		}
 	}
 
 	if out, err := config.Server.RunCmdOnNode("systemctl enable --now rke2-server"); err != nil {
@@ -374,7 +537,7 @@ func (config *TestConfig) CheckDefaultAndTraefikDeploymentsAndDaemonSets() error
 
 func (config *TestConfig) CheckFlannelTraefikDeploymentsAndDaemonSets() error {
 	return config.CheckResourcesReady(
-		nil,
+		[]string{"rke2-coredns-rke2-coredns"},
 		[]string{"kube-flannel-ds", "rke2-traefik"},
 		"10s",
 	)
@@ -457,9 +620,13 @@ func (config *TestConfig) CheckNodesReady(expectedNodes int) error {
 }
 
 func (config *TestConfig) EnsureScannerNamespace() error {
+	if _, err := config.Server.RunKubectl(fmt.Sprintf("get namespace %s", scannerNamespace)); err == nil {
+		return nil
+	}
+
 	cmd := fmt.Sprintf("create namespace %s", scannerNamespace)
 	if out, err := config.Server.RunKubectl(cmd); err != nil {
-		return fmt.Errorf("failed to ensure scanner namespace: %s: %w", out, err)
+		return fmt.Errorf("failed to create scanner namespace %s: %s: %w", scannerNamespace, out, err)
 	}
 	return nil
 }
@@ -630,6 +797,12 @@ func (config *TestConfig) Cleanup() error {
 		}
 	}
 
+	if config.LocalRegistry != nil && config.LocalRegistry.Name != "" {
+		if out, err := RunCommand("docker rm -f " + config.LocalRegistry.Name); err != nil {
+			errs = append(errs, fmt.Sprintf("cleanup local registry failed: %s: %v", out, err))
+		}
+	}
+
 	if config.TestDir != "" {
 		if err := os.RemoveAll(config.TestDir); err != nil {
 			errs = append(errs, fmt.Sprintf("cleanup temp dir failed: %v", err))
@@ -694,6 +867,15 @@ func (config *TestConfig) writeServerConfig(serverConfig string) error {
 	cmd := fmt.Sprintf("mkdir -p /etc/rancher/rke2 && echo %s | base64 -d > /etc/rancher/rke2/config.yaml", b64Config)
 	if out, err := config.Server.RunCmdOnNode(cmd); err != nil {
 		return fmt.Errorf("failed to write server config: %s: %w", out, err)
+	}
+	return nil
+}
+
+func (config *TestConfig) writeRegistriesConfig(registriesConfig string) error {
+	b64Config := base64.StdEncoding.EncodeToString([]byte(registriesConfig))
+	cmd := fmt.Sprintf("mkdir -p /etc/rancher/rke2 && echo %s | base64 -d > /etc/rancher/rke2/registries.yaml", b64Config)
+	if out, err := config.Server.RunCmdOnNode(cmd); err != nil {
+		return fmt.Errorf("failed to write registries config: %s: %w", out, err)
 	}
 	return nil
 }
