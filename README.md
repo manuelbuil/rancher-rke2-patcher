@@ -2,6 +2,8 @@
 
 `rke2-patcher` is a small CLI to inspect and patch RKE2 component images.
 
+> **Note:** `rke2-patcher` requires RKE2 Prime clusters with `prime: true` enabled in the RKE2 configuration.
+
 ## Build
 
 ```bash
@@ -30,14 +32,31 @@ rke2-patcher image-reconcile <component>
 
 Make targets:
 
+**Build :**
 ```bash
-make version
-make image-cve COMPONENT=rke2-traefik
-make image-list COMPONENT=rke2-traefik
-make image-patch COMPONENT=rke2-traefik
-make test-docker-image-cve
-make test-docker-image-list
-make test-docker-image-patcher
+make build                              # Build binary
+```
+
+**Docker Scenario Tests:**
+```bash
+make test-docker-image-cve              # Test image CVE scanning
+make test-docker-image-list             # Test image list functionality
+make test-docker-image-patcher          # Test image patching
+make test-docker-image-patcher-traefik-flannel  # Test traefik/flannel patching
+make test-docker-image-cve-local        # Test local CVE mode (host only)
+make test-docker-reconcile              # Test reconciliation
+make test-docker-merging-values         # Test value merging
+make test-docker-reconcile-upgrade      # Test upgrade reconciliation
+make test-docker-airgap                 # Test airgap deployment
+```
+
+All docker tests support:
+- `EXEC_MODE=binary` (default): Run tests as host CLI
+- `EXEC_MODE=pod`: Run tests as Kubernetes Job in pod
+
+For airgap tests, specify bundle location:
+```bash
+make test-docker-airgap IMAGE_BUNDLES_DIR=/path/to/bundles
 ```
 
 
@@ -53,34 +72,7 @@ The repository includes Docker end-to-end scenario tests, modeled after the RKE2
 - Shared test harness: `tests/docker/testutils.go`
 - CI workflow: `.github/workflows/docker-tests.yaml`
 
-### Test Harness Improvements
-
-- All rollout status checks for Deployments and DaemonSets are now consolidated into a single helper: `CheckResourcesReady`.
-- All scenario-specific helpers (e.g., `CheckDefaultDeploymentsAndDaemonSets`, `CheckFlannelTraefikDeploymentsAndDaemonSets`, etc.) delegate to this generic function.
-- This makes the test code DRY, maintainable, and easy to extend for new scenarios.
-- The test harness provisions a real RKE2 server in Docker, applies configuration, and interacts with the cluster using `kubectl` via Docker exec.
-
-### Example scenario flow:
-
-1. Deploy an RKE2 server in Docker with a specified version and configuration.
-2. Wait for the default or scenario-specific core components to become ready using the consolidated helpers.
-3. Run `rke2-patcher` commands (e.g., `image-cve`, `image-list`, `image-patch`, `image-reconcile`) and verify results.
-4. Validate image tags, rollout status, and patch state as needed.
-
-Run locally:
-
-```bash
-make test-docker-image-cve
-make test-docker-image-list
-make test-docker-image-patcher
-```
-
-Or directly:
-
-```bash
-CGO_ENABLED=0 go build -o ./bin/rke2-patcher .
-go test -v -timeout=80m ./tests/docker/default_components/default_components_test.go -ginkgo.v -rke2Version v1.35.3+rke2r3 -patcherBin ./bin/rke2-patcher
-```
+## Use cases
 
 ### 0) Show effective configuration
 
@@ -237,8 +229,6 @@ The `image-patch` command supports these options and related inputs:
   - If multiple files are provided, the first entry is used.
   - Useful when running as a host binary on control-plane nodes.
 
-- Generated `HelmChartConfig` namespace
-  - Hardcoded: `kube-system`
 
 The `image-cve` command supports these overrides:
 
