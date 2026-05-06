@@ -187,7 +187,7 @@ func DownloadRKE2ImageTarball(rke2Version, bundleName, destinationDir string) (s
 		return "", fmt.Errorf("failed to create destination directory %q: %w", destinationDir, err)
 	}
 
-	bundleURL := fmt.Sprintf("https://github.com/rancher/rke2/releases/download/%s/%s", rke2Version, bundleName)
+	bundleURL := fmt.Sprintf("https://prime.ribs.rancher.io/rke2/%s/%s", strings.ReplaceAll(rke2Version, "+", "%2B"), bundleName)
 	destinationPath := filepath.Join(destinationDir, bundleName)
 
 	curlCmd := fmt.Sprintf("curl -fsSL --retry 3 --retry-delay 2 -o %q %q", destinationPath, bundleURL)

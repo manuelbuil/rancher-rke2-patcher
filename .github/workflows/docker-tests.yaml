@@ -45,9 +45,12 @@ jobs:
           - image_cve_local
           - merging_values
           - reconcile_upgrade
+          - airgap
         exclude:
           - exec_mode: pod
             scenario: image_cve_local
+          - exec_mode: pod
+            scenario: airgap
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -70,4 +73,11 @@ jobs:
         env:
           EXEC_MODE: ${{ matrix.exec_mode }}
         run: |
-          go test -v -timeout=80m ./tests/docker/${{ matrix.scenario }}/${{ matrix.scenario }}_test.go -ginkgo.v -ci -rke2Version v1.35.3+rke2r3 -patcherBin ./bin/rke2-patcher
+          timeout=80m
+          extra_args=""
+          if [ "${{ matrix.scenario }}" = "airgap" ]; then
+            timeout=90m
+            extra_args="-imageBundlesDir ./tests/docker/airgap/bundles"
+          fi
+
+          go test -v -timeout="${timeout}" ./tests/docker/${{ matrix.scenario }}/${{ matrix.scenario }}_test.go -ginkgo.v -ci -rke2Version v1.35.3+rke2r3 -patcherBin ./bin/rke2-patcher ${extra_args}

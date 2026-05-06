@@ -57,7 +57,7 @@ test-docker-reconcile-upgrade: build
 	EXEC_MODE=$(EXEC_MODE) go test -v -timeout=80m ./tests/docker/reconcile_upgrade/reconcile_upgrade_test.go -ginkgo.v -rke2Version v1.35.3+rke2r3 -patcherBin $(CURDIR)/$(BINARY)
 
 test-docker-airgap: build
-	EXEC_MODE=$(EXEC_MODE) go test -v -timeout=90m ./tests/docker/airgap/airgap_test.go -ginkgo.v -rke2Version v1.35.4+rke2r1 -patcherBin $(CURDIR)/$(BINARY) -imageBundlesDir $(IMAGE_BUNDLES_DIR)
+	EXEC_MODE=$(EXEC_MODE) go test -v -timeout=90m ./tests/docker/airgap/airgap_test.go -ginkgo.v -rke2Version v1.35.3+rke2r3 -patcherBin $(CURDIR)/$(BINARY) -imageBundlesDir $(IMAGE_BUNDLES_DIR)
 
 VERSION ?= $(shell grep '^const version' internal/cmd/app.go | cut -d '"' -f2)
 
