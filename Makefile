@@ -45,6 +45,9 @@ test-docker-image-patcher: build
 test-docker-image-patcher-traefik-flannel: build
 	EXEC_MODE=$(EXEC_MODE) go test -v -timeout=80m ./tests/docker/flannel_traefik_patch_components/flannel_traefik_patch_components_test.go -ginkgo.v -rke2Version v1.35.3+rke2r3 -patcherBin $(CURDIR)/$(BINARY)
 
+test-docker-patch-reconcile-component-ha: build
+	EXEC_MODE=$(EXEC_MODE) go test -v -timeout=120m ./tests/docker/patch_reconcile_component_ha/patch_reconcile_component_ha_test.go -ginkgo.v -rke2Version v1.35.3+rke2r3 -patcherBin $(CURDIR)/$(BINARY)
+
 test-docker-reconcile: build
 	EXEC_MODE=$(EXEC_MODE) go test -v -timeout=80m ./tests/docker/reconcile/reconcile_test.go -ginkgo.v -rke2Version v1.35.3+rke2r3 -patcherBin $(CURDIR)/$(BINARY)
 
@@ -62,6 +65,17 @@ test-docker-airgap: build
 
 test-docker-multipatcher-reconcile: build
 	EXEC_MODE=$(EXEC_MODE) go test -v -timeout=80m ./tests/docker/multi_patcher_reconcile/multi_patcher_reconcile_test.go -ginkgo.v -rke2Version v1.35.3+rke2r3 -patcherBin $(CURDIR)/$(BINARY)
+
+# Normalized aliases matching workflow matrix scenarios.
+test-docker-image_cve: test-docker-image-cve
+test-docker-image_list: test-docker-image-list
+test-docker-patch_components: test-docker-image-patcher
+test-docker-flannel_traefik_patch_components: test-docker-image-patcher-traefik-flannel
+test-docker-image_cve_local: test-docker-image-cve-local
+test-docker-merging_values: test-docker-merging-values
+test-docker-reconcile_upgrade: test-docker-reconcile-upgrade
+test-docker-multi_patcher_reconcile: test-docker-multipatcher-reconcile
+test-docker-patch_reconcile_component_ha: test-docker-patch-reconcile-component-ha
 
 VERSION ?= $(shell grep '^const version' internal/cmd/app.go | cut -d '"' -f2)
 

@@ -19,10 +19,10 @@ const (
 
 var (
 	upgradeRKE2URL = fmt.Sprintf("https://github.com/rancher/rke2/releases/download/%s/rke2.linux-amd64", upgradeRKE2Version)
-	ci          = flag.Bool("ci", false, "running on CI")
-	rke2Version = flag.String("rke2Version", "v1.35.3+rke2r3", "rke2 version to install")
-	patcherBin  = flag.String("patcherBin", "./bin/rke2-patcher", "path to rke2-patcher binary")
-	tc          *docker.TestConfig
+	ci             = flag.Bool("ci", false, "running on CI")
+	rke2Version    = flag.String("rke2Version", "v1.35.3+rke2r3", "rke2 version to install")
+	patcherBin     = flag.String("patcherBin", "./bin/rke2-patcher", "path to rke2-patcher binary")
+	tc             *docker.TestConfig
 )
 
 func Test_DockerPatchUpgrade(t *testing.T) {
@@ -91,13 +91,13 @@ var _ = Describe("Upgrade and patching behavior", Ordered, func() {
 
 	Context("Patch after upgrade should fail", func() {
 		It("fails to patch rke2-coredns and rke2-ingress-nginx", func() {
-            output, err := tc.RunImagePatch("rke2-coredns", false)
-            Expect(err).To(HaveOccurred())
-            Expect(output).To(ContainSubstring("refusing to patch: active patch for component"))
+			output, err := tc.RunImagePatch("rke2-coredns", false)
+			Expect(err).To(HaveOccurred())
+			Expect(output).To(ContainSubstring("refusing to patch: active patch for component"))
 
-            output, err = tc.RunImagePatch("rke2-ingress-nginx", false)
-            Expect(err).To(HaveOccurred())
-            Expect(output).To(ContainSubstring("is already the latest"))
+			output, err = tc.RunImagePatch("rke2-ingress-nginx", false)
+			Expect(err).To(HaveOccurred())
+			Expect(output).To(ContainSubstring("is already the latest"))
 		})
 	})
 
@@ -148,7 +148,12 @@ var _ = AfterEach(func() {
 var _ = AfterSuite(func() {
 	if tc != nil && failed {
 		AddReportEntry("cluster-resources", tc.DumpResources())
-		AddReportEntry("rke2-server-journal", tc.DumpServiceLogs(300))
+		if helmchartOutput, err := tc.Server.RunKubectl("get helmchartconfig -A"); err == nil {
+			AddReportEntry("helmchartconfig", func() string { return helmchartOutput }())
+		}
+		if cmOutput, err := tc.Server.RunKubectl("get configmap -A -o wide | grep rke2-patcher"); err == nil {
+			AddReportEntry("rke2-patcher-configmap", func() string { return cmOutput }())
+		}
 	}
 
 	if *ci || (tc != nil && !failed) {

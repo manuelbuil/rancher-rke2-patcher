@@ -28,7 +28,6 @@ var (
 	patcherBin  = flag.String("patcherBin", "./bin/rke2-patcher", "path to rke2-patcher binary")
 
 	tc *docker.TestConfig
-
 )
 
 func Test_DockerPatchComponents(t *testing.T) {
@@ -114,7 +113,6 @@ var _ = Describe("Default components image-patch", Ordered, func() {
 			Expect(tc.CheckResourcesReady([]string{"rke2-coredns-rke2-coredns", "rke2-coredns-rke2-coredns-autoscaler"}, nil, rolloutTimeout.String())).To(Succeed())
 		})
 
-
 		It("patches rke2-coredns", func() {
 			output, err := tc.RunImagePatch("rke2-coredns-cluster-autoscaler", false)
 			Expect(err).NotTo(HaveOccurred(), output)
@@ -188,7 +186,12 @@ var _ = AfterEach(func() {
 var _ = AfterSuite(func() {
 	if tc != nil && failed {
 		AddReportEntry("cluster-resources", tc.DumpResources())
-		AddReportEntry("rke2-server-journal", tc.DumpServiceLogs(300))
+		if helmchartOutput, err := tc.Server.RunKubectl("get helmchartconfig -A"); err == nil {
+			AddReportEntry("helmchartconfig", func() string { return helmchartOutput }())
+		}
+		if cmOutput, err := tc.Server.RunKubectl("get configmap -A -o wide | grep rke2-patcher"); err == nil {
+			AddReportEntry("rke2-patcher-configmap", func() string { return cmOutput }())
+		}
 	}
 
 	if *ci || (tc != nil && !failed) {

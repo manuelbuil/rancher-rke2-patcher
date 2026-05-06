@@ -47,6 +47,7 @@ jobs:
           - reconcile_upgrade
           - airgap
           - multi_patcher_reconcile
+          - patch_reconcile_component_ha
         exclude:
           - exec_mode: pod
             scenario: image_cve_local
