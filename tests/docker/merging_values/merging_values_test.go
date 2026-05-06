@@ -146,7 +146,12 @@ var _ = AfterEach(func() {
 var _ = AfterSuite(func() {
 	if tc != nil && failed {
 		AddReportEntry("cluster-resources", tc.DumpResources())
-		AddReportEntry("rke2-server-journal", tc.DumpServiceLogs(300))
+		if helmchartOutput, err := tc.Server.RunKubectl("get helmchartconfig -A"); err == nil {
+			AddReportEntry("helmchartconfig", func() string { return helmchartOutput }())
+		}
+		if cmOutput, err := tc.Server.RunKubectl("get configmap -A -o wide | grep rke2-patcher"); err == nil {
+			AddReportEntry("rke2-patcher-configmap", func() string { return cmOutput }())
+		}
 	}
 
 	if *ci || (tc != nil && !failed) {

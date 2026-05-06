@@ -19,23 +19,25 @@ const patcherNamespace = "rke2-patcher"
 const patcherReleaseName = "rke2-patcher"
 const patcherImageRepository = "mbuilsuse/rke2-patcher"
 const nodePatcherImageTarballPath = "/var/lib/rancher/rke2/agent/images/rke2-patcher-test.tar"
+const testClusterToken = "testing"
 const execModeEnvName = "EXEC_MODE"
 const execModeBinary = "binary"
 const execModePod = "pod"
 const projectRootRelativeFromSuite = "../../.."
 
 type TestConfig struct {
-	TestDir          string
-	KubeconfigFile   string
-	PatcherBinary    string
-	ExecMode         string
-	ProjectRoot      string
-	PatcherImage     string
-	RKE2Version      string
-	ServerConfig     string
-	RegistriesConfig string
-	Server           DockerNode
-	LocalRegistry    *LocalRegistry
+	TestDir           string
+	KubeconfigFile    string
+	PatcherBinary     string
+	ExecMode          string
+	ProjectRoot       string
+	PatcherImage      string
+	RKE2Version       string
+	ServerConfig      string
+	RegistriesConfig  string
+	Server            DockerNode
+	AdditionalServers []DockerNode
+	LocalRegistry     *LocalRegistry
 }
 
 type LocalRegistry struct {
@@ -322,7 +324,6 @@ func (config *TestConfig) ProvisionServer() error {
 		"--cgroupns=host",
 		"--memory", "4096m",
 		"-p", fmt.Sprintf("127.0.0.1:%d:6443", port),
-		"-e", "RKE2_TOKEN=testtoken",
 		"-v", "/sys/fs/bpf:/sys/fs/bpf",
 		"-v", "/lib/modules:/lib/modules",
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
@@ -345,7 +346,7 @@ func (config *TestConfig) ProvisionServer() error {
 
 	// Always set prime: true, and append any extra config provided by the test
 	extraConfig := strings.TrimSpace(config.ServerConfig)
-	mergedConfig := "prime: true\n"
+	mergedConfig := fmt.Sprintf("prime: true\ntoken: %s\n", testClusterToken)
 	if extraConfig != "" {
 		mergedConfig += "\n" + extraConfig + "\n"
 	}
@@ -384,6 +385,81 @@ func (config *TestConfig) ProvisionServer() error {
 		}
 	}
 
+	return nil
+}
+
+// ProvisionAdditionalServer starts a new RKE2 server container that joins the
+// existing primary server, forming a multi-control-plane cluster.
+// The primary server must already be running before calling this.
+func (config *TestConfig) ProvisionAdditionalServer() error {
+	if config.Server.Name == "" {
+		return fmt.Errorf("primary server must be provisioned before adding additional servers")
+	}
+
+	inspectCmd := fmt.Sprintf("docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' %s", config.Server.Name)
+	primaryIP, err := RunCommand(inspectCmd)
+	if err != nil {
+		return fmt.Errorf("failed to get primary server IP: %s: %w", primaryIP, err)
+	}
+	primaryIP = strings.TrimSpace(primaryIP)
+	if primaryIP == "" {
+		return fmt.Errorf("could not determine primary server IP from docker inspect")
+	}
+
+	serverName := fmt.Sprintf("rke2-server-%d", time.Now().UnixNano())
+	port := getPort()
+	if port <= 0 {
+		return fmt.Errorf("failed to find free API port for additional server")
+	}
+
+	_, _ = RunCommand(fmt.Sprintf("docker rm -f %s", serverName))
+
+	dockerRun := strings.Join([]string{
+		"docker run -d",
+		"--name", serverName,
+		"--hostname", serverName,
+		"--privileged",
+		"--cgroupns=host",
+		"--memory", "4096m",
+		"-p", fmt.Sprintf("127.0.0.1:%d:6443", port),
+		"-v", "/sys/fs/bpf:/sys/fs/bpf",
+		"-v", "/lib/modules:/lib/modules",
+		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
+		"rancher/systemd-node:v0.0.5",
+		"/usr/lib/systemd/systemd --unit=noop.target --show-status=true",
+	}, " ")
+
+	if out, err := RunCommand(dockerRun); err != nil {
+		return fmt.Errorf("failed to start additional server container: %s: %w", out, err)
+	}
+
+	node := DockerNode{Name: serverName, Port: port}
+
+	if out, err := node.RunCmdOnNode("mount --make-rshared /sys"); err != nil {
+		return fmt.Errorf("failed to set /sys mount propagation on additional server: %s: %w", out, err)
+	}
+
+	installCmd := fmt.Sprintf("curl -sfL https://get.rke2.io | INSTALL_RKE2_VERSION='%s' sh -", config.RKE2Version)
+	if out, err := node.RunCmdOnNode(installCmd); err != nil {
+		return fmt.Errorf("failed to install rke2 on additional server: %s: %w", out, err)
+	}
+
+	joinConfig := fmt.Sprintf("prime: true\nserver: https://%s:9345\ntoken: %s\n", primaryIP, testClusterToken)
+	if extra := strings.TrimSpace(config.ServerConfig); extra != "" {
+		joinConfig += "\n" + extra + "\n"
+	}
+
+	b64Config := base64.StdEncoding.EncodeToString([]byte(joinConfig))
+	writeCmd := fmt.Sprintf("mkdir -p /etc/rancher/rke2 && echo %s | base64 -d > /etc/rancher/rke2/config.yaml", b64Config)
+	if out, err := node.RunCmdOnNode(writeCmd); err != nil {
+		return fmt.Errorf("failed to write config on additional server: %s: %w", out, err)
+	}
+
+	if out, err := node.RunCmdOnNode("systemctl enable --now rke2-server"); err != nil {
+		return fmt.Errorf("failed to start rke2-server on additional server: %s: %w", out, err)
+	}
+
+	config.AdditionalServers = append(config.AdditionalServers, node)
 	return nil
 }
 
@@ -796,6 +872,14 @@ func (config *TestConfig) Cleanup() error {
 	if config.Server.Name != "" {
 		if out, err := RunCommand("docker rm -f " + config.Server.Name); err != nil {
 			errs = append(errs, fmt.Sprintf("cleanup server failed: %s: %v", out, err))
+		}
+	}
+
+	for _, extra := range config.AdditionalServers {
+		if extra.Name != "" {
+			if out, err := RunCommand("docker rm -f " + extra.Name); err != nil {
+				errs = append(errs, fmt.Sprintf("cleanup additional server %s failed: %s: %v", extra.Name, out, err))
+			}
 		}
 	}
 

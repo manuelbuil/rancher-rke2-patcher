@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	baseCoreDNSTag    = "v1.14.2-build20260310"
-	firstCoreDNSTag   = "v1.14.2-build20260331"
-	secondCoreDNSTag  = "v1.14.2-build20260408"
+	baseCoreDNSTag   = "v1.14.2-build20260310"
+	firstCoreDNSTag  = "v1.14.2-build20260331"
+	secondCoreDNSTag = "v1.14.2-build20260408"
 
 	rolloutTimeout = 3 * time.Minute
 )
@@ -24,7 +24,6 @@ var (
 	patcherBin  = flag.String("patcherBin", "./bin/rke2-patcher", "path to rke2-patcher binary")
 
 	tc *docker.TestConfig
-
 )
 
 func Test_DockerPatchComponents(t *testing.T) {
@@ -129,7 +128,12 @@ var _ = AfterEach(func() {
 var _ = AfterSuite(func() {
 	if tc != nil && failed {
 		AddReportEntry("cluster-resources", tc.DumpResources())
-		AddReportEntry("rke2-server-journal", tc.DumpServiceLogs(300))
+		if helmchartOutput, err := tc.Server.RunKubectl("get helmchartconfig -A"); err == nil {
+			AddReportEntry("helmchartconfig", func() string { return helmchartOutput }())
+		}
+		if cmOutput, err := tc.Server.RunKubectl("get configmap -A -o wide | grep rke2-patcher"); err == nil {
+			AddReportEntry("rke2-patcher-configmap", func() string { return cmOutput }())
+		}
 	}
 
 	if *ci || (tc != nil && !failed) {
