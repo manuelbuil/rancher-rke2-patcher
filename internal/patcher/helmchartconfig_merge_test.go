@@ -6,16 +6,19 @@ import (
 )
 
 func TestMergeHelmChartConfigWithContents(t *testing.T) {
-	existingContent := `apiVersion: helm.cattle.io/v1
-kind: HelmChartConfig
-metadata:
-  name: rke2-traefik
-  namespace: kube-system
-spec:
-  valuesContent: |-
-    service:
-      type: ClusterIP
-`
+	existingContent := "apiVersion: helm.cattle.io/v1\n" +
+		"kind: HelmChartConfig\n" +
+		"metadata:\n" +
+		"  name: rke2-traefik\n" +
+		"  namespace: kube-system\n" +
+		"  labels:\n" +
+		"    app.kubernetes.io/managed-by: test-suite\n" +
+		"    test.rke2-patcher.io/preserve: \"true\"\n" +
+		"spec:\n" +
+		"  failurePolicy: abort\n" +
+		"  valuesContent: |-\n" +
+		"    service:\n" +
+		"      type: ClusterIP\n"
 
 	generatedContent := `apiVersion: helm.cattle.io/v1
 kind: HelmChartConfig
@@ -39,6 +42,12 @@ spec:
 	}
 	if !strings.Contains(merged, "repository: rancher/hardened-traefik") || !strings.Contains(merged, "tag: new-tag") {
 		t.Fatalf("expected merged content to include generated image values: %s", merged)
+	}
+	if !strings.Contains(merged, "app.kubernetes.io/managed-by: test-suite") || !strings.Contains(merged, "test.rke2-patcher.io/preserve: \"true\"") {
+		t.Fatalf("expected merged content to preserve labels: %s", merged)
+	}
+	if !strings.Contains(merged, "failurePolicy: abort") {
+		t.Fatalf("expected merged content to preserve failurePolicy: %s", merged)
 	}
 }
 

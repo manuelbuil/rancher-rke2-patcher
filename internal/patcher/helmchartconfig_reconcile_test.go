@@ -6,19 +6,22 @@ import (
 )
 
 func TestSubtractPatcherValuesContent_RemovesGeneratedKeysLeavesUserKeys(t *testing.T) {
-	existingFileContent := `apiVersion: helm.cattle.io/v1
-kind: HelmChartConfig
-metadata:
-  name: rke2-traefik
-  namespace: kube-system
-spec:
-  valuesContent: |-
-    image:
-      repository: rancher/hardened-traefik
-      tag: v3.4.0
-    service:
-      type: ClusterIP
-`
+	existingFileContent := "apiVersion: helm.cattle.io/v1\n" +
+		"kind: HelmChartConfig\n" +
+		"metadata:\n" +
+		"  name: rke2-traefik\n" +
+		"  namespace: kube-system\n" +
+		"  labels:\n" +
+		"    app.kubernetes.io/managed-by: test-suite\n" +
+		"    test.rke2-patcher.io/preserve: \"true\"\n" +
+		"spec:\n" +
+		"  failurePolicy: abort\n" +
+		"  valuesContent: |-\n" +
+		"    image:\n" +
+		"      repository: rancher/hardened-traefik\n" +
+		"      tag: v3.4.0\n" +
+		"    service:\n" +
+		"      type: ClusterIP\n"
 
 	generatedValuesContent := "image:\n  repository: rancher/hardened-traefik\n  tag: v3.4.0"
 
@@ -33,6 +36,12 @@ spec:
 
 	if !strings.Contains(result, "type: ClusterIP") {
 		t.Fatalf("expected user service values to be preserved, got:\n%s", result)
+	}
+	if !strings.Contains(result, "app.kubernetes.io/managed-by: test-suite") || !strings.Contains(result, "test.rke2-patcher.io/preserve: \"true\"") {
+		t.Fatalf("expected labels to be preserved, got:\n%s", result)
+	}
+	if !strings.Contains(result, "failurePolicy: abort") {
+		t.Fatalf("expected failurePolicy to be preserved, got:\n%s", result)
 	}
 }
 

@@ -1,6 +1,7 @@
 package patcher
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/url"
@@ -63,6 +64,8 @@ func MergeHelmChartConfigWithContents(generatedContent string, existingContents 
 		if err != nil {
 			return "", err
 		}
+		// Start from the existing object so metadata and non-valuesContent spec fields are preserved.
+		mergedDoc = existingDoc.DeepCopy()
 		break
 	}
 
@@ -74,9 +77,7 @@ func MergeHelmChartConfigWithContents(generatedContent string, existingContents 
 		mergedDoc.Kind = "HelmChartConfig"
 	}
 
-	name := strings.TrimSpace(mergedDoc.Name)
-	namespace := strings.TrimSpace(mergedDoc.Namespace)
-	return renderHelmChartConfig(name, namespace, mergedDoc.Spec.ValuesContent), nil
+	return marshalHelmChartConfig(mergedDoc)
 }
 
 func HelmChartConfigIdentityFromContent(content string) (string, string, error) {
@@ -246,10 +247,57 @@ func SubtractPatcherValuesContent(existingFileContent, generatedValuesContent st
 		updatedSpec.ValuesContent = strings.Join(lines, "\n")
 	}
 
-	name := strings.TrimSpace(existingDoc.Name)
-	namespace := strings.TrimSpace(existingDoc.Namespace)
-	valuesContent := updatedSpec.ValuesContent
-	return renderHelmChartConfig(name, namespace, valuesContent), nil
+	updatedDoc := existingDoc.DeepCopy()
+	updatedDoc.Spec = updatedSpec
+	return marshalHelmChartConfig(updatedDoc)
+}
+
+func marshalHelmChartConfig(doc *helmcontrollerv1.HelmChartConfig) (string, error) {
+	content, err := syaml.Marshal(doc)
+	if err != nil {
+		return "", fmt.Errorf("failed to serialize HelmChartConfig: %w", err)
+	}
+
+	var root yaml.Node
+	if err := yaml.Unmarshal(content, &root); err != nil {
+		return "", fmt.Errorf("failed to parse serialized HelmChartConfig: %w", err)
+	}
+
+	setValuesContentLiteralStyle(&root)
+
+	var buffer bytes.Buffer
+	encoder := yaml.NewEncoder(&buffer)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&root); err != nil {
+		return "", fmt.Errorf("failed to encode HelmChartConfig: %w", err)
+	}
+	if err := encoder.Close(); err != nil {
+		return "", fmt.Errorf("failed to finish encoding HelmChartConfig: %w", err)
+	}
+
+	return strings.TrimSuffix(buffer.String(), "...\n"), nil
+}
+
+func setValuesContentLiteralStyle(node *yaml.Node) {
+	if node == nil {
+		return
+	}
+
+	if node.Kind == yaml.MappingNode {
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			keyNode := node.Content[index]
+			valueNode := node.Content[index+1]
+			if keyNode.Value == "valuesContent" && valueNode.Kind == yaml.ScalarNode {
+				valueNode.Style = yaml.LiteralStyle
+			}
+			setValuesContentLiteralStyle(valueNode)
+		}
+		return
+	}
+
+	for _, child := range node.Content {
+		setValuesContentLiteralStyle(child)
+	}
 }
 
 func deepSubtractMap(base, toRemove map[string]any) map[string]any {
