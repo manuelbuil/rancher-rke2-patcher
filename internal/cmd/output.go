@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"strings"
 
+	helmv1 "github.com/k3s-io/helm-controller/pkg/apis/helm.cattle.io/v1"
 	"github.com/rancher/rke2-patcher/internal/components"
+	"github.com/rancher/rke2-patcher/internal/patcher"
 )
 
 func printImageListWithCVEs(component components.Component, tagsToScan []string, currentTag string, previousTag string, cveByTag map[string]cveListEntry, verbose bool) {
@@ -38,7 +40,12 @@ func printUpgradeRequiredTagsNotice(blockedTags []string) {
 	fmt.Printf("Upgrade RKE2 to make these tags eligible for patching.\n")
 }
 
-func printPatchPreview(componentName, runningImage, currentTag, targetTag, content string) {
+func printPatchPreview(componentName, runningImage, currentTag, targetTag string, chart *helmv1.HelmChartConfig) error {
+	content, err := patcher.MarshalHelmChartConfig(chart)
+	if err != nil {
+		return err
+	}
+
 	fmt.Printf("component: %s\n", componentName)
 	fmt.Printf("current image: %s\n", runningImage)
 	fmt.Printf("current tag: %s\n", currentTag)
@@ -47,6 +54,8 @@ func printPatchPreview(componentName, runningImage, currentTag, targetTag, conte
 	fmt.Printf("would apply HelmChartConfig\n")
 	fmt.Println("---")
 	fmt.Print(content)
+
+	return nil
 }
 
 func printPatchApplied(componentName, runningImage, currentTag, targetTag string) {

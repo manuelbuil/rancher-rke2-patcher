@@ -29,7 +29,17 @@ spec:
       tag: new-tag
 `
 
-	merged, err := MergeHelmChartConfigWithContents(generatedContent, []string{existingContent})
+	generatedChart, err := parseSingleHelmChartConfig(generatedContent)
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+
+	mergedChart, err := MergeHelmChartConfig(generatedChart, existingContent)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	merged, err := MarshalHelmChartConfig(mergedChart)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -55,7 +65,12 @@ spec:
       tag: v3.4.0
 `
 
-	name, namespace, err := HelmChartConfigIdentityFromContent(content)
+	chart, err := parseSingleHelmChartConfig(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	name, namespace, err := HelmChartConfigIdentity(chart)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -91,7 +106,17 @@ spec:
             tag: v3.6.12-build20260409 # change made by rke2-patcher
 `
 
-	merged, err := MergeHelmChartConfigWithContents(generatedContent, []string{existingContent})
+	generatedChart, err := parseSingleHelmChartConfig(generatedContent)
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+
+	mergedChart, err := MergeHelmChartConfig(generatedChart, existingContent)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	merged, err := MarshalHelmChartConfig(mergedChart)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -125,12 +150,15 @@ spec:
 }
 
 func TestMergeHelmChartConfigWithContents_AfterReconcileEmptyValuesContent_ProducesIndentedValuesBlock(t *testing.T) {
-	generatedContent, _ := BuildHelmChartConfig(
+	generatedChart, _, err := BuildHelmChartConfigObject(
 		"rke2-coredns",
 		"rke2-coredns",
 		"registry.rancher.com/rancher/hardened-coredns",
 		"v1.14.3-build20260604",
 	)
+	if err != nil {
+		t.Fatalf("unexpected build error: %v", err)
+	}
 
 	existingAfterReconcile := `apiVersion: helm.cattle.io/v1
 kind: HelmChartConfig
@@ -142,7 +170,12 @@ spec:
   valuesContent: ""
 `
 
-	merged, err := MergeHelmChartConfigWithContents(generatedContent, []string{existingAfterReconcile})
+	mergedAfterReconcileChart, err := MergeHelmChartConfig(generatedChart, existingAfterReconcile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	merged, err := MarshalHelmChartConfig(mergedAfterReconcileChart)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -151,8 +184,109 @@ spec:
 		t.Fatalf("expected image key to remain indented under valuesContent, got:\n%s", merged)
 	}
 
-	if !strings.Contains(merged, "valuesContent: |-\n    image: # change made by rke2-patcher") {
-		t.Fatalf("expected valuesContent block to include correctly indented image key, got:\n%s", merged)
+	if !strings.Contains(merged, "valuesContent: |-") || !strings.Contains(merged, "image: # change made by rke2-patcher") {
+		t.Fatalf("expected valuesContent block to include patcher image key, got:\n%s", merged)
 	}
 
+	if !strings.Contains(merged, "failurePolicy: reinstall") {
+		t.Fatalf("expected existing non-values spec fields to be preserved, got:\n%s", merged)
+	}
+
+}
+
+func TestMergeHelmChartConfigWithContents_PreservesExistingMetadataFields(t *testing.T) {
+	existingContent := `apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-coredns
+  namespace: kube-system
+  labels:
+    team: networking
+  annotations:
+    owner: platform
+spec:
+  valuesContent: |-
+    service:
+      type: ClusterIP
+`
+
+	generatedChart, _, err := BuildHelmChartConfigObject(
+		"rke2-coredns",
+		"rke2-coredns",
+		"registry.rancher.com/rancher/hardened-coredns",
+		"v1.14.3-build20260604",
+	)
+	if err != nil {
+		t.Fatalf("unexpected build error: %v", err)
+	}
+
+	mergedChart, err := MergeHelmChartConfig(generatedChart, existingContent)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	merged, err := MarshalHelmChartConfig(mergedChart)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(merged, "team: networking") || !strings.Contains(merged, "owner: platform") {
+		t.Fatalf("expected existing metadata labels/annotations to be preserved, got:\n%s", merged)
+	}
+
+	if !strings.Contains(merged, "repository: rancher/hardened-coredns") {
+		t.Fatalf("expected patcher image values to be applied, got:\n%s", merged)
+	}
+}
+
+func TestMergeHelmChartConfigWithContents_PreservesExistingSpecFields(t *testing.T) {
+	existingContent := `apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-coredns
+  namespace: kube-system
+spec:
+  values:
+    featureFlags:
+      canary: true
+  valuesSecrets:
+    - name: coredns-values
+      keys:
+        - values.yaml
+      ignoreUpdates: true
+  failurePolicy: reinstall
+  valuesContent: |-
+    service:
+      type: ClusterIP
+`
+
+	generatedChart, _, err := BuildHelmChartConfigObject(
+		"rke2-coredns",
+		"rke2-coredns",
+		"registry.rancher.com/rancher/hardened-coredns",
+		"v1.14.3-build20260604",
+	)
+	if err != nil {
+		t.Fatalf("unexpected build error: %v", err)
+	}
+
+	mergedChart, err := MergeHelmChartConfig(generatedChart, existingContent)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	merged, err := MarshalHelmChartConfig(mergedChart)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(merged, "valuesSecrets:") || !strings.Contains(merged, "name: coredns-values") {
+		t.Fatalf("expected existing spec.valuesSecrets to be preserved, got:\n%s", merged)
+	}
+	if !strings.Contains(merged, "failurePolicy: reinstall") {
+		t.Fatalf("expected existing spec.failurePolicy to be preserved, got:\n%s", merged)
+	}
+	if !strings.Contains(merged, "repository: rancher/hardened-coredns") {
+		t.Fatalf("expected generated image values to be merged into valuesContent, got:\n%s", merged)
+	}
 }

@@ -2,15 +2,18 @@ package kube
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
+	helmv1 "github.com/k3s-io/helm-controller/pkg/apis/helm.cattle.io/v1"
 	"gopkg.in/yaml.v3"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -62,10 +65,10 @@ func kubeDynamicClient() (dynamic.Interface, error) {
 	return dynamicClient, nil
 }
 
-// ListHelmChartConfigsByIdentity is a variable for testability, delegates to listHelmChartConfigsByIdentityImpl.
-var ListHelmChartConfigsByIdentity = listHelmChartConfigsByIdentityImpl
+// GetHelmChartConfigByIdentity is a variable for testability, delegates to getHelmChartConfigByIdentityImpl.
+var GetHelmChartConfigByIdentity = getHelmChartConfigByIdentityImpl
 
-func listHelmChartConfigsByIdentityImpl(name string, namespace string) ([]HelmChartConfigObject, error) {
+func getHelmChartConfigByIdentityImpl(name string, namespace string) (*HelmChartConfigObject, error) {
 	trimmedName := strings.TrimSpace(name)
 	trimmedNamespace := strings.TrimSpace(namespace)
 	if trimmedName == "" {
@@ -81,73 +84,68 @@ func listHelmChartConfigsByIdentityImpl(name string, namespace string) ([]HelmCh
 	}
 
 	gvr := schema.GroupVersionResource{Group: "helm.cattle.io", Version: "v1", Resource: "helmchartconfigs"}
-	list, err := dynamicClient.Resource(gvr).Namespace(trimmedNamespace).List(context.Background(), metav1.ListOptions{})
+	item, err := dynamicClient.Resource(gvr).Namespace(trimmedNamespace).Get(context.Background(), trimmedName, metav1.GetOptions{})
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to list helmchartconfigs in %s: %w", trimmedNamespace, err)
+		return nil, fmt.Errorf("failed to get helmchartconfig %s/%s: %w", trimmedNamespace, trimmedName, err)
 	}
 
-	results := make([]HelmChartConfigObject, 0, len(list.Items))
-	for _, item := range list.Items {
-		if strings.TrimSpace(item.GetName()) != trimmedName {
-			continue
-		}
-		if strings.TrimSpace(item.GetNamespace()) != trimmedNamespace {
-			continue
-		}
+	spec, _, err := unstructured.NestedMap(item.Object, "spec")
+	if err != nil {
+		return nil, err
+	}
 
-		spec, _, err := unstructured.NestedMap(item.Object, "spec")
-		if err != nil {
-			return nil, err
-		}
-
-		manifest := helmChartConfigItem{
-			APIVersion: item.GetAPIVersion(),
-			Kind:       item.GetKind(),
-			Metadata: helmObjectMeta{
-				Name:      item.GetName(),
-				Namespace: item.GetNamespace(),
-			},
-			Spec: spec,
-		}
-		if strings.TrimSpace(manifest.APIVersion) == "" {
-			manifest.APIVersion = "helm.cattle.io/v1"
-		}
-		if strings.TrimSpace(manifest.Kind) == "" {
-			manifest.Kind = "HelmChartConfig"
-		}
-
-		contentBytes, err := yaml.Marshal(manifest)
-		if err != nil {
-			return nil, err
-		}
-
-		results = append(results, HelmChartConfigObject{
+	manifest := helmChartConfigItem{
+		APIVersion: item.GetAPIVersion(),
+		Kind:       item.GetKind(),
+		Metadata: helmObjectMeta{
 			Name:      item.GetName(),
 			Namespace: item.GetNamespace(),
-			Content:   string(contentBytes),
-		})
+		},
+		Spec: spec,
+	}
+	if strings.TrimSpace(manifest.APIVersion) == "" {
+		manifest.APIVersion = "helm.cattle.io/v1"
+	}
+	if strings.TrimSpace(manifest.Kind) == "" {
+		manifest.Kind = "HelmChartConfig"
 	}
 
-	return results, nil
+	contentBytes, err := yaml.Marshal(manifest)
+	if err != nil {
+		return nil, err
+	}
+
+	return &HelmChartConfigObject{
+		Name:      item.GetName(),
+		Namespace: item.GetNamespace(),
+		Content:   string(contentBytes),
+	}, nil
 }
 
 // ApplyHelmChartConfig is a variable for testability, delegates to applyHelmChartConfigImpl.
 var ApplyHelmChartConfig = applyHelmChartConfigImpl
 
-func applyHelmChartConfigImpl(yamlContent string) error {
-	un := &unstructured.Unstructured{}
-	if err := yaml.Unmarshal([]byte(yamlContent), &un.Object); err != nil {
-		return fmt.Errorf("failed to unmarshal HelmChartConfig YAML: %w", err)
+// applyHelmChartConfigImpl applies a HelmChartConfig via server-side apply.
+func applyHelmChartConfigImpl(chart *helmv1.HelmChartConfig) error {
+	if chart == nil {
+		return fmt.Errorf("helmchartconfig cannot be nil")
+	}
+
+	name := strings.TrimSpace(chart.GetName())
+	if name == "" {
+		return fmt.Errorf("helmchartconfig name cannot be empty")
+	}
+
+	namespace := strings.TrimSpace(chart.GetNamespace())
+	if namespace == "" {
+		namespace = "kube-system"
+		chart.SetNamespace(namespace)
 	}
 
 	gvr := schema.GroupVersionResource{Group: "helm.cattle.io", Version: "v1", Resource: "helmchartconfigs"}
-	namespace := un.GetNamespace()
-	if namespace == "" {
-		namespace = "kube-system"
-	}
 
 	dynamicClient, err := kubeDynamicClient()
 	if err != nil {
@@ -155,21 +153,26 @@ func applyHelmChartConfigImpl(yamlContent string) error {
 	}
 
 	resource := dynamicClient.Resource(gvr).Namespace(namespace)
-	name := un.GetName()
 
-	// Try to get the existing object
-	existing, err := resource.Get(context.Background(), name, metav1.GetOptions{})
+	patchBytes, err := json.Marshal(chart)
 	if err != nil {
-		if k8serrors.IsNotFound(err) {
-			// Create if not found
-			_, err = resource.Create(context.Background(), un, metav1.CreateOptions{})
-			return err
-		}
-		return err
+		return fmt.Errorf("failed to marshal HelmChartConfig for apply patch: %w", err)
 	}
 
-	// Update if found
-	un.SetResourceVersion(existing.GetResourceVersion())
-	_, err = resource.Update(context.Background(), un, metav1.UpdateOptions{})
-	return err
+	force := true
+	_, err = resource.Patch(
+		context.Background(),
+		name,
+		types.ApplyPatchType,
+		patchBytes,
+		metav1.PatchOptions{
+			FieldManager: "rke2-patcher",
+			Force:        &force,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to apply helmchartconfig %s/%s: %w", namespace, name, err)
+	}
+
+	return nil
 }

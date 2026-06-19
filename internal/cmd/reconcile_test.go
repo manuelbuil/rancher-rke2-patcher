@@ -7,8 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	helmv1 "github.com/k3s-io/helm-controller/pkg/apis/helm.cattle.io/v1"
 	"github.com/rancher/rke2-patcher/internal/components"
 	"github.com/rancher/rke2-patcher/internal/kube"
+	"github.com/rancher/rke2-patcher/internal/patcher"
 	cli "github.com/urfave/cli/v2"
 )
 
@@ -133,19 +135,23 @@ spec:
 	)
 
 	// Mock kube API
-	originalList := kube.ListHelmChartConfigsByIdentity
+	originalGet := kube.GetHelmChartConfigByIdentity
 	originalApply := kube.ApplyHelmChartConfig
 	defer func() {
-		kube.ListHelmChartConfigsByIdentity = originalList
+		kube.GetHelmChartConfigByIdentity = originalGet
 		kube.ApplyHelmChartConfig = originalApply
 	}()
 
-	kube.ListHelmChartConfigsByIdentity = func(name, namespace string) ([]kube.HelmChartConfigObject, error) {
-		return []kube.HelmChartConfigObject{{
+	kube.GetHelmChartConfigByIdentity = func(name, namespace string) (*kube.HelmChartConfigObject, error) {
+		return &kube.HelmChartConfigObject{
 			Content: helmChartConfigContent,
-		}}, nil
+		}, nil
 	}
-	kube.ApplyHelmChartConfig = func(content string) error {
+	kube.ApplyHelmChartConfig = func(chart *helmv1.HelmChartConfig) error {
+		content, err := patcher.MarshalHelmChartConfig(chart)
+		if err != nil {
+			return err
+		}
 		appliedContent = content
 		return nil
 	}
@@ -183,9 +189,9 @@ func TestReconcileEntry_NoOpWhenFileDoesNotExist(t *testing.T) {
 	}
 
 	// Mock cluster returns nothing (no HelmChartConfig found)
-	originalList := kube.ListHelmChartConfigsByIdentity
-	defer func() { kube.ListHelmChartConfigsByIdentity = originalList }()
-	kube.ListHelmChartConfigsByIdentity = func(name, namespace string) ([]kube.HelmChartConfigObject, error) {
+	originalGet := kube.GetHelmChartConfigByIdentity
+	defer func() { kube.GetHelmChartConfigByIdentity = originalGet }()
+	kube.GetHelmChartConfigByIdentity = func(name, namespace string) (*kube.HelmChartConfigObject, error) {
 		return nil, nil
 	}
 
@@ -209,17 +215,17 @@ func TestReconcileEntry_NoOpWhenFileDoesNotExist(t *testing.T) {
 func TestRunReconcile_DoesNotRemoveStateWhenFileIsMissing(t *testing.T) {
 	useInMemoryPatchStateBackend(t)
 
-	originalList := kube.ListHelmChartConfigsByIdentity
+	originalGet := kube.GetHelmChartConfigByIdentity
 	originalApply := kube.ApplyHelmChartConfig
-	kube.ListHelmChartConfigsByIdentity = func(name, namespace string) ([]kube.HelmChartConfigObject, error) {
+	kube.GetHelmChartConfigByIdentity = func(name, namespace string) (*kube.HelmChartConfigObject, error) {
 		// Return nil to simulate the "file is missing" scenario
 		return nil, nil
 	}
-	kube.ApplyHelmChartConfig = func(content string) error {
+	kube.ApplyHelmChartConfig = func(chart *helmv1.HelmChartConfig) error {
 		return nil
 	}
 	t.Cleanup(func() {
-		kube.ListHelmChartConfigsByIdentity = originalList
+		kube.GetHelmChartConfigByIdentity = originalGet
 		kube.ApplyHelmChartConfig = originalApply
 	})
 
@@ -266,17 +272,17 @@ func TestRunReconcile_DoesNotRemoveStateWhenFileIsMissing(t *testing.T) {
 func TestRunReconcile_OnlyTouchesTargetComponent(t *testing.T) {
 	useInMemoryPatchStateBackend(t)
 
-	var originalList = kube.ListHelmChartConfigsByIdentity
+	var originalGet = kube.GetHelmChartConfigByIdentity
 	var originalApply = kube.ApplyHelmChartConfig
-	kube.ListHelmChartConfigsByIdentity = func(name, namespace string) ([]kube.HelmChartConfigObject, error) {
+	kube.GetHelmChartConfigByIdentity = func(name, namespace string) (*kube.HelmChartConfigObject, error) {
 		// Return nil to simulate the "file is missing" scenario
 		return nil, nil
 	}
-	kube.ApplyHelmChartConfig = func(content string) error {
+	kube.ApplyHelmChartConfig = func(chart *helmv1.HelmChartConfig) error {
 		return nil
 	}
 	t.Cleanup(func() {
-		kube.ListHelmChartConfigsByIdentity = originalList
+		kube.GetHelmChartConfigByIdentity = originalGet
 		kube.ApplyHelmChartConfig = originalApply
 	})
 
@@ -320,22 +326,26 @@ spec:
 	)
 
 	// Mock kube API
-	originalList = kube.ListHelmChartConfigsByIdentity
+	originalGet = kube.GetHelmChartConfigByIdentity
 	originalApply = kube.ApplyHelmChartConfig
 	defer func() {
-		kube.ListHelmChartConfigsByIdentity = originalList
+		kube.GetHelmChartConfigByIdentity = originalGet
 		kube.ApplyHelmChartConfig = originalApply
 	}()
-	kube.ListHelmChartConfigsByIdentity = func(name, namespace string) ([]kube.HelmChartConfigObject, error) {
+	kube.GetHelmChartConfigByIdentity = func(name, namespace string) (*kube.HelmChartConfigObject, error) {
 		if name == "rke2-traefik" {
-			return []kube.HelmChartConfigObject{{Content: traefikContent}}, nil
+			return &kube.HelmChartConfigObject{Content: traefikContent}, nil
 		}
 		if name == "rke2-flannel" {
-			return []kube.HelmChartConfigObject{{Content: flannelContent}}, nil
+			return &kube.HelmChartConfigObject{Content: flannelContent}, nil
 		}
 		return nil, nil
 	}
-	kube.ApplyHelmChartConfig = func(content string) error {
+	kube.ApplyHelmChartConfig = func(chart *helmv1.HelmChartConfig) error {
+		content, err := patcher.MarshalHelmChartConfig(chart)
+		if err != nil {
+			return err
+		}
 		if strings.Contains(content, "rke2-traefik") {
 			applied["traefik"] = content
 		}
@@ -532,17 +542,17 @@ spec:
 `
 
 	var applied bool
-	originalList := kube.ListHelmChartConfigsByIdentity
+	originalGet := kube.GetHelmChartConfigByIdentity
 	originalApply := kube.ApplyHelmChartConfig
 	defer func() {
-		kube.ListHelmChartConfigsByIdentity = originalList
+		kube.GetHelmChartConfigByIdentity = originalGet
 		kube.ApplyHelmChartConfig = originalApply
 	}()
 
-	kube.ListHelmChartConfigsByIdentity = func(name, namespace string) ([]kube.HelmChartConfigObject, error) {
-		return []kube.HelmChartConfigObject{{Content: existingContent}}, nil
+	kube.GetHelmChartConfigByIdentity = func(name, namespace string) (*kube.HelmChartConfigObject, error) {
+		return &kube.HelmChartConfigObject{Content: existingContent}, nil
 	}
-	kube.ApplyHelmChartConfig = func(content string) error {
+	kube.ApplyHelmChartConfig = func(chart *helmv1.HelmChartConfig) error {
 		applied = true
 		return nil
 	}

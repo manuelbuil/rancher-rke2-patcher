@@ -211,9 +211,15 @@ func runImagePatch(component components.Component, options imagePatchOptions) er
 		return err
 	}
 
-	generatedContent, generatedValuesContent := patcher.BuildHelmChartConfig(component.Name, component.HelmChartConfigName, currentImageName, targetTagName)
+	generatedChart, generatedValuesContent, err := patcher.BuildHelmChartConfigObject(component.Name, component.HelmChartConfigName, currentImageName, targetTagName)
+	if err != nil {
+		return err
+	}
+
 	if options.DryRun {
-		printPatchPreview(components.CLIName(component.Name), runningImage, currentImageTag, targetTagName, generatedContent)
+		if err := printPatchPreview(components.CLIName(component.Name), runningImage, currentImageTag, targetTagName, generatedChart); err != nil {
+			return err
+		}
 		return nil
 	}
 
@@ -222,23 +228,21 @@ func runImagePatch(component components.Component, options imagePatchOptions) er
 		return err
 	}
 
-	targetName, targetNamespace, err := patcher.HelmChartConfigIdentityFromContent(generatedContent)
+	targetName, targetNamespace, err := patcher.HelmChartConfigIdentity(generatedChart)
 	if err != nil {
 		return err
 	}
 
-	// If there are no conflicts, contentToWrite remains as generatedContent
-	contentToWrite := generatedContent
-	conflicts, err := kube.ListHelmChartConfigsByIdentity(targetName, targetNamespace)
+	// If there are no conflicts, chartToWrite remains as generatedChart
+	chartToWrite := generatedChart
+	conflict, err := kube.GetHelmChartConfigByIdentity(targetName, targetNamespace)
 	if err != nil {
 		return err
 	}
 
-	if len(conflicts) > 0 {
-		fmt.Printf("warning: found a HelmChartConfig object in the cluster for this component:\n")
-		for _, conflict := range conflicts {
-			fmt.Printf("- %s/%s\n", conflict.Namespace, conflict.Name)
-		}
+	if conflict != nil {
+		fmt.Printf("warning: found an existing HelmChartConfig object in the cluster for this component:\n")
+		fmt.Printf("- %s/%s\n", conflict.Namespace, conflict.Name)
 
 		if !options.AutoApprove {
 			firstConfirm, err := promptYesNoFn("Merging generated and existing HelmChartConfig values will be tried. Continue? [Yes/No]: ")
@@ -253,18 +257,15 @@ func runImagePatch(component components.Component, options imagePatchOptions) er
 			fmt.Println("auto-approve enabled: proceeding with merge")
 		}
 
-		existingContents := make([]string, 0, len(conflicts))
-		for _, conflict := range conflicts {
-			existingContents = append(existingContents, conflict.Content)
-		}
-
-		mergedContent, err := patcher.MergeHelmChartConfigWithContents(generatedContent, existingContents)
+		mergedChart, err := patcher.MergeHelmChartConfig(generatedChart, conflict.Content)
 		if err != nil {
 			return err
 		}
-		contentToWrite = mergedContent
+		chartToWrite = mergedChart
 
-		printPatchPreview(components.CLIName(component.Name), runningImage, currentImageTag, targetTagName, contentToWrite)
+		if err := printPatchPreview(components.CLIName(component.Name), runningImage, currentImageTag, targetTagName, chartToWrite); err != nil {
+			return err
+		}
 		if !options.AutoApprove {
 			secondConfirm, err := promptYesNoFn("Apply this HelmChartConfig now? [Yes/No]: ")
 			if err != nil {
@@ -279,7 +280,7 @@ func runImagePatch(component components.Component, options imagePatchOptions) er
 		}
 	}
 
-	if err := kube.ApplyHelmChartConfig(contentToWrite); err != nil {
+	if err := kube.ApplyHelmChartConfig(chartToWrite); err != nil {
 		return fmt.Errorf("failed to apply HelmChartConfig to cluster: %w", err)
 	}
 
@@ -391,31 +392,37 @@ func reconcileEntry(entry patchEntry) (bool, error) {
 	case "rke2-canal-flannel":
 		resourceName = "rke2-canal"
 	}
-	configs, err := kube.ListHelmChartConfigsByIdentity(resourceName, "kube-system")
+	config, err := kube.GetHelmChartConfigByIdentity(resourceName, "kube-system")
 	if err != nil {
-		return false, fmt.Errorf("failed to list HelmChartConfig for reconciliation: %w", err)
+		return false, fmt.Errorf("failed to get HelmChartConfig for reconciliation: %w", err)
 	}
-	if len(configs) == 0 {
+	if config == nil {
 		return false, nil // nothing to reconcile
 	}
 
-	// Use the first found config
-	existingContent := strings.TrimSpace(configs[0].Content)
+	existingContent := strings.TrimSpace(config.Content)
 	if existingContent == "" {
 		return false, nil
 	}
 
-	updatedContent, err := patcher.SubtractPatcherValuesContent(existingContent, generatedValuesContent)
+	existingChart, err := patcher.ParseHelmChartConfig(existingContent)
+	if err != nil {
+		return false, fmt.Errorf("failed to parse existing HelmChartConfig: %w", err)
+	}
+	existingValuesContent := strings.TrimSpace(existingChart.Spec.ValuesContent)
+
+	updatedChart, err := patcher.SubtractPatcherValuesContent(existingContent, generatedValuesContent)
 	if err != nil {
 		return false, fmt.Errorf("failed to strip patcher values: %w", err)
 	}
 
-	// Just in case the user ran reconcile unnecessarily but nothing needs to be done
-	if strings.TrimSpace(updatedContent) == strings.TrimSpace(existingContent) {
-		return false, nil
+	// Check if anything actually changed
+	updatedValuesContent := strings.TrimSpace(updatedChart.Spec.ValuesContent)
+	if updatedValuesContent == existingValuesContent {
+		return false, nil // no changes needed
 	}
 
-	if err := kube.ApplyHelmChartConfig(updatedContent); err != nil {
+	if err := kube.ApplyHelmChartConfig(updatedChart); err != nil {
 		return false, fmt.Errorf("failed to apply reconciled HelmChartConfig: %w", err)
 	}
 

@@ -22,7 +22,12 @@ spec:
 
 	generatedValuesContent := "image:\n  repository: rancher/hardened-traefik\n  tag: v3.4.0"
 
-	result, err := SubtractPatcherValuesContent(existingFileContent, generatedValuesContent)
+	resultChart, err := SubtractPatcherValuesContent(existingFileContent, generatedValuesContent)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	result, err := MarshalHelmChartConfig(resultChart)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -51,7 +56,12 @@ spec:
 
 	generatedValuesContent := "image:\n  repository: rancher/hardened-traefik\n  tag: v3.4.0"
 
-	result, err := SubtractPatcherValuesContent(existingFileContent, generatedValuesContent)
+	resultChart, err := SubtractPatcherValuesContent(existingFileContent, generatedValuesContent)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	result, err := MarshalHelmChartConfig(resultChart)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -78,7 +88,12 @@ spec:
       tag: v3.4.0
 `
 
-	result, err := SubtractPatcherValuesContent(existingFileContent, "")
+	resultChart, err := SubtractPatcherValuesContent(existingFileContent, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	result, err := MarshalHelmChartConfig(resultChart)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -104,7 +119,12 @@ spec:
 
 	generatedValuesContent := "image:\n  repository: rancher/hardened-traefik\n  tag: v3.4.0"
 
-	result, err := SubtractPatcherValuesContent(existingFileContent, generatedValuesContent)
+	resultChart, err := SubtractPatcherValuesContent(existingFileContent, generatedValuesContent)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	result, err := MarshalHelmChartConfig(resultChart)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -135,7 +155,12 @@ spec:
 
 	generatedValuesContent := "image:\n  repository: rancher/hardened-coredns\n  tag: v1.14.3-build20260604"
 
-	result, err := SubtractPatcherValuesContent(existingFileContent, generatedValuesContent)
+	resultChart, err := SubtractPatcherValuesContent(existingFileContent, generatedValuesContent)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	result, err := MarshalHelmChartConfig(resultChart)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -146,5 +171,54 @@ spec:
 
 	if strings.Contains(result, "repository: rancher/hardened-coredns") || strings.Contains(result, "tag: v1.14.3-build20260604") {
 		t.Fatalf("expected patcher-generated values not to be written for differing overrides, got:\n%s", result)
+	}
+}
+
+func TestSubtractPatcherValuesContent_PreservesMetadataAndOtherSpecFields(t *testing.T) {
+	existingFileContent := `apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-coredns
+  namespace: kube-system
+  labels:
+    team: networking
+  annotations:
+    owner: platform
+spec:
+  failurePolicy: abort
+  valuesContent: |-
+    image:
+      repository: rancher/hardened-coredns
+      tag: v1.14.3-build20260604
+    service:
+      type: ClusterIP
+`
+
+	generatedValuesContent := "image:\n  repository: rancher/hardened-coredns\n  tag: v1.14.3-build20260604"
+
+	resultChart, err := SubtractPatcherValuesContent(existingFileContent, generatedValuesContent)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	result, err := MarshalHelmChartConfig(resultChart)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(result, "failurePolicy: abort") {
+		t.Fatalf("expected non-values spec fields to be preserved, got:\n%s", result)
+	}
+
+	if !strings.Contains(result, "team: networking") || !strings.Contains(result, "owner: platform") {
+		t.Fatalf("expected metadata labels/annotations to be preserved, got:\n%s", result)
+	}
+
+	if strings.Contains(result, "repository: rancher/hardened-coredns") || strings.Contains(result, "tag: v1.14.3-build20260604") {
+		t.Fatalf("expected patcher image values to be removed during reconcile, got:\n%s", result)
+	}
+
+	if !strings.Contains(result, "type: ClusterIP") {
+		t.Fatalf("expected user values to be preserved, got:\n%s", result)
 	}
 }

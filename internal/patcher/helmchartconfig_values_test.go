@@ -65,7 +65,10 @@ func TestBuildHelmChartConfigWithDataDir_GeneratedContentParsesForPatchedCompone
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, valuesContent := BuildHelmChartConfig(tt.componentName, tt.chartName, tt.imageName, tt.imageTag)
+			_, valuesContent, err := BuildHelmChartConfigObject(tt.componentName, tt.chartName, tt.imageName, tt.imageTag)
+			if err != nil {
+				t.Fatalf("unexpected build error: %v", err)
+			}
 
 			if strings.TrimSpace(valuesContent) == "" {
 				t.Fatal("expected non-empty valuesContent, got empty content")
