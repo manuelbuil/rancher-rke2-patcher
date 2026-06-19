@@ -113,7 +113,38 @@ spec:
 		t.Fatalf("expected user pullPolicy to be preserved, got:\n%s", result)
 	}
 
-	if strings.Contains(result, "repository:") || strings.Contains(result, "tag:") {
-		t.Fatalf("expected patcher-managed keys to be removed, got:\n%s", result)
+	if !strings.Contains(result, "repository: rancher/hardened-traefik") || !strings.Contains(result, "tag: v3.4.0") {
+		t.Fatalf("expected image block to remain untouched since user added pullPolicy, got:\n%s", result)
+	}
+}
+
+func TestSubtractPatcherValuesContent_DoesNotRemoveUserImageOverrideWhenValuesDiffer(t *testing.T) {
+	existingFileContent := `apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-coredns
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    image:
+      repository: rancher/custom-coredns
+      tag: v9.9.9-custom
+    service:
+      type: ClusterIP
+`
+
+	generatedValuesContent := "image:\n  repository: rancher/hardened-coredns\n  tag: v1.14.3-build20260604"
+
+	result, err := SubtractPatcherValuesContent(existingFileContent, generatedValuesContent)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(result, "repository: rancher/custom-coredns") || !strings.Contains(result, "tag: v9.9.9-custom") {
+		t.Fatalf("expected existing image override values to remain when values differ, got:\n%s", result)
+	}
+
+	if strings.Contains(result, "repository: rancher/hardened-coredns") || strings.Contains(result, "tag: v1.14.3-build20260604") {
+		t.Fatalf("expected patcher-generated values not to be written for differing overrides, got:\n%s", result)
 	}
 }

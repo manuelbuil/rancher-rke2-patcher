@@ -3,7 +3,7 @@ package patcher
 import (
 	"fmt"
 	"io"
-	"net/url"
+	"reflect"
 	"strings"
 
 	"dario.cat/mergo"
@@ -26,7 +26,6 @@ const (
 // `rke2-canal-flannel` and `rke2-canal-calico`) converge on the same manifest file and
 // can be merged on subsequent patch runs.
 func BuildHelmChartConfig(componentName string, defaultChartConfigName string, imageName string, imageTag string) (string, string) {
-
 	repo := imageRepositoryWithoutRegistry(imageName)
 	valuesContent := renderValuesContent(componentName, defaultChartConfigName, repo, imageTag)
 	content := renderHelmChartConfig(defaultChartConfigName, defaultNamespace, valuesContent)
@@ -284,7 +283,12 @@ func SubtractPatcherValuesContent(existingFileContent, generatedValuesContent st
 		return "", fmt.Errorf("failed to parse existing valuesContent: %w", err)
 	}
 
-	resultValues := deepSubtractMap(existingValues, generatedValues)
+	// Only update the manifest if we actually removed patcher-managed keys; if nothing was removed (meaning
+	// generated values don't exactly match existing keys), return the original manifest unchanged (no-op).
+	resultValues := subtractExactMatches(existingValues, generatedValues)
+	if reflect.DeepEqual(resultValues, existingValues) {
+		return existingFileContent, nil
+	}
 
 	updatedSpec := map[string]any{}
 	if existingSpec != nil {
@@ -313,7 +317,10 @@ func SubtractPatcherValuesContent(existingFileContent, generatedValuesContent st
 	return renderHelmChartConfig(name, namespace, valuesContent), nil
 }
 
-func deepSubtractMap(base, toRemove map[string]any) map[string]any {
+// subtractExactMatches removes keys from base where the value exactly matches the corresponding value in toRemove.
+// Only top-level exact matches are removed; partial matches (nested structures that differ) are left untouched
+// to respect user ownership of modified configurations.
+func subtractExactMatches(base, toRemove map[string]any) map[string]any {
 	result := map[string]any{}
 	if base != nil {
 		result = runtime.DeepCopyJSON(base)
@@ -324,17 +331,7 @@ func deepSubtractMap(base, toRemove map[string]any) map[string]any {
 			continue
 		}
 
-		removeMap, removeIsMap := removeValue.(map[string]any)
-		existingMap, existingIsMap := existingValue.(map[string]any)
-
-		if removeIsMap && existingIsMap {
-			subtracted := deepSubtractMap(existingMap, removeMap)
-			if len(subtracted) == 0 {
-				delete(result, key)
-			} else {
-				result[key] = subtracted
-			}
-		} else {
+		if reflect.DeepEqual(existingValue, removeValue) {
 			delete(result, key)
 		}
 	}
@@ -343,6 +340,7 @@ func deepSubtractMap(base, toRemove map[string]any) map[string]any {
 
 // renderHelmChartConfig generates the content of a HelmChartConfig manifest for the given component, chart, and image details
 func renderHelmChartConfig(chartName string, namespace string, valuesContent string) string {
+	indentedValuesContent := indentValuesContentBlock(valuesContent)
 	return fmt.Sprintf(`apiVersion: helm.cattle.io/v1
 kind: HelmChartConfig
 metadata:
@@ -351,7 +349,44 @@ metadata:
 spec:
   valuesContent: |-
 %s
-`, chartName, namespace, valuesContent)
+`, chartName, namespace, indentedValuesContent)
+}
+
+// indentValuesContentBlock indents each line of the valuesContent block by 4 spaces to match the HelmChartConfig manifest style
+func indentValuesContentBlock(valuesContent string) string {
+	trimmed := strings.TrimRight(valuesContent, "\n")
+	if strings.TrimSpace(trimmed) == "" {
+		return ""
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	minIndent := -1
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if minIndent == -1 || indent < minIndent {
+			minIndent = indent
+		}
+	}
+
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			lines[i] = ""
+			continue
+		}
+
+		dedented := line
+		if minIndent > 0 && len(line) >= minIndent {
+			dedented = line[minIndent:]
+		}
+
+		lines[i] = "    " + dedented
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // renderValuesContent generates the valuesContent block for the HelmChartConfig based on the component and chart names
@@ -404,32 +439,6 @@ func renderValuesContent(componentName string, chartName string, imageName strin
 	return fmt.Sprintf(`    image: # change made by rke2-patcher
       repository: %s # change made by rke2-patcher
       tag: %s # change made by rke2-patcher`, imageName, imageTag)
-}
-
-// registryHostFromURL attempts to extract a registry host from a given string, which may be a full URL or just a hostname
-// If the input cannot be parsed as a URL, it will be treated as a hostname directly.
-func registryHostFromURL(envVarUrl string) string {
-	if strings.Contains(envVarUrl, "://") {
-		parsed, err := url.Parse(envVarUrl)
-		if err == nil {
-			host := strings.TrimSpace(parsed.Host)
-			if host != "" {
-				return host
-			}
-		}
-	}
-
-	trimmed := strings.Trim(envVarUrl, "/")
-	if trimmed == "" {
-		return ""
-	}
-
-	firstSlash := strings.Index(trimmed, "/")
-	if firstSlash >= 0 {
-		return strings.TrimSpace(trimmed[:firstSlash])
-	}
-
-	return trimmed
 }
 
 func imageRepositoryWithoutRegistry(imageName string) string {

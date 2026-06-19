@@ -93,3 +93,29 @@ func TestRenderValuesContent_CoreDNSClusterAutoscalerUsesAutoscalerImageKeys(t *
 		t.Fatalf("expected coredns-cluster-autoscaler values to include repository/tag override, got:\n%s", values)
 	}
 }
+
+func TestRenderHelmChartConfig_IndentsUnindentedValuesContent(t *testing.T) {
+	values := "image:\n  repository: rancher/hardened-coredns\n  tag: v1.14.3-build20260604"
+	rendered := renderHelmChartConfig("rke2-coredns", "kube-system", values)
+
+	if strings.Contains(rendered, "\nimage:") {
+		t.Fatalf("expected valuesContent keys to be indented under block scalar, got:\n%s", rendered)
+	}
+
+	if !strings.Contains(rendered, "\n    image:\n      repository: rancher/hardened-coredns\n      tag: v1.14.3-build20260604") {
+		t.Fatalf("expected valuesContent block to be indented with 4 spaces, got:\n%s", rendered)
+	}
+}
+
+func TestRenderHelmChartConfig_PreservesAlreadyIndentedValuesContent(t *testing.T) {
+	values := "    image:\n      repository: rancher/hardened-coredns\n      tag: v1.14.3-build20260604"
+	rendered := renderHelmChartConfig("rke2-coredns", "kube-system", values)
+
+	if strings.Contains(rendered, "\n        image:") {
+		t.Fatalf("expected block indentation to remain stable without double-indenting, got:\n%s", rendered)
+	}
+
+	if !strings.Contains(rendered, "\n    image:\n      repository: rancher/hardened-coredns\n      tag: v1.14.3-build20260604") {
+		t.Fatalf("expected stable valuesContent indentation, got:\n%s", rendered)
+	}
+}

@@ -410,6 +410,11 @@ func reconcileEntry(entry patchEntry) (bool, error) {
 		return false, fmt.Errorf("failed to strip patcher values: %w", err)
 	}
 
+	// Just in case the user ran reconcile unnecessarily but nothing needs to be done
+	if strings.TrimSpace(updatedContent) == strings.TrimSpace(existingContent) {
+		return false, nil
+	}
+
 	if err := kube.ApplyHelmChartConfig(updatedContent); err != nil {
 		return false, fmt.Errorf("failed to apply reconciled HelmChartConfig: %w", err)
 	}

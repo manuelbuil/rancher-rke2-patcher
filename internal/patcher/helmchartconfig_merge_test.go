@@ -123,3 +123,36 @@ spec:
 		}
 	}
 }
+
+func TestMergeHelmChartConfigWithContents_AfterReconcileEmptyValuesContent_ProducesIndentedValuesBlock(t *testing.T) {
+	generatedContent, _ := BuildHelmChartConfig(
+		"rke2-coredns",
+		"rke2-coredns",
+		"registry.rancher.com/rancher/hardened-coredns",
+		"v1.14.3-build20260604",
+	)
+
+	existingAfterReconcile := `apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-coredns
+  namespace: kube-system
+spec:
+  failurePolicy: reinstall
+  valuesContent: ""
+`
+
+	merged, err := MergeHelmChartConfigWithContents(generatedContent, []string{existingAfterReconcile})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(merged, "\nimage: # change made by rke2-patcher") {
+		t.Fatalf("expected image key to remain indented under valuesContent, got:\n%s", merged)
+	}
+
+	if !strings.Contains(merged, "valuesContent: |-\n    image: # change made by rke2-patcher") {
+		t.Fatalf("expected valuesContent block to include correctly indented image key, got:\n%s", merged)
+	}
+
+}

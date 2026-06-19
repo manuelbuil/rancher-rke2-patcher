@@ -509,3 +509,52 @@ spec:
 		t.Fatalf("expected current-version traefik state entry to remain after rejecting revert")
 	}
 }
+
+func TestReconcileEntry_LeavesExistingHelmChartConfigUntouchedWhenValuesDiffer(t *testing.T) {
+	entry := patchEntry{
+		Component:              "rke2-coredns",
+		ClusterVersion:         "v1.35.1+rke2r1",
+		GeneratedValuesContent: "image:\n  repository: rancher/hardened-coredns\n  tag: v1.14.3-build20260604",
+	}
+
+	existingContent := `apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-coredns
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    image:
+      repository: rancher/custom-coredns
+      tag: v9.9.9-custom
+    service:
+      type: ClusterIP
+`
+
+	var applied bool
+	originalList := kube.ListHelmChartConfigsByIdentity
+	originalApply := kube.ApplyHelmChartConfig
+	defer func() {
+		kube.ListHelmChartConfigsByIdentity = originalList
+		kube.ApplyHelmChartConfig = originalApply
+	}()
+
+	kube.ListHelmChartConfigsByIdentity = func(name, namespace string) ([]kube.HelmChartConfigObject, error) {
+		return []kube.HelmChartConfigObject{{Content: existingContent}}, nil
+	}
+	kube.ApplyHelmChartConfig = func(content string) error {
+		applied = true
+		return nil
+	}
+
+	reconciled, err := reconcileEntry(entry)
+	if err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	if reconciled {
+		t.Fatalf("expected reconcileEntry to skip when existing HelmChartConfig values differ from patcher-managed values")
+	}
+	if applied {
+		t.Fatalf("expected HelmChartConfig apply to be skipped when nothing should be changed")
+	}
+}
