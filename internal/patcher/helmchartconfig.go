@@ -6,9 +6,10 @@ import (
 	"strings"
 
 	"dario.cat/mergo"
+	helmcontrollerv1 "github.com/k3s-io/helm-controller/pkg/apis/helm.cattle.io/v1"
 	"gopkg.in/yaml.v3"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	syaml "sigs.k8s.io/yaml"
 )
 
 const (
@@ -34,85 +35,70 @@ func BuildHelmChartConfig(componentName string, defaultChartConfigName string, i
 }
 
 func MergeHelmChartConfigWithContent(generatedContent string, existingContent string) (string, error) {
-	generatedDoc, err := parseSingleHelmChartConfig(generatedContent)
+	generatedHcc, err := parseSingleHelmChartConfig(generatedContent)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse generated HelmChartConfig: %w", err)
 	}
 
-	targetName := strings.TrimSpace(generatedDoc.GetName())
-	targetNamespace := strings.TrimSpace(generatedDoc.GetNamespace())
+	targetName := strings.TrimSpace(generatedHcc.Name)
+	targetNamespace := strings.TrimSpace(generatedHcc.Namespace)
 	if targetName == "" || targetNamespace == "" {
 		return "", fmt.Errorf("generated HelmChartConfig is missing metadata.name or metadata.namespace")
 	}
 
-	mergedSpec := map[string]any{}
-	spec, found, err := findMatchingSpecInContent(existingContent, targetName, targetNamespace)
-	if err != nil {
-		return "", err
+	mergedHcc := generatedHcc.DeepCopy()
+	var mergedSpec helmcontrollerv1.HelmChartConfigSpec
+	foundExisting := false
+
+	// If there's existing content, merge it
+	if strings.TrimSpace(existingContent) != "" {
+		existingHcc, err := parseSingleHelmChartConfig(existingContent)
+		if err != nil {
+			return "", fmt.Errorf("failed to parse existing HelmChartConfig: %w", err)
+		}
+
+		if strings.TrimSpace(existingHcc.Name) == targetName && strings.TrimSpace(existingHcc.Namespace) == targetNamespace {
+			mergedSpec, err = mergeHelmChartConfigSpec(existingHcc.Spec, generatedHcc.Spec)
+			if err != nil {
+				return "", err
+			}
+			// Start from the existing object so metadata and non-valuesContent spec fields are preserved.
+			mergedHcc = existingHcc.DeepCopy()
+			foundExisting = true
+		}
 	}
-	if found {
-		mergedSpec, err = mergeMapsWithOverride(mergedSpec, spec)
+
+	// If no existing was found, normalize the generated spec through the standard path to ensure indentation.
+	if !foundExisting {
+		var err error
+		mergedSpec, err = mergeHelmChartConfigSpec(helmcontrollerv1.HelmChartConfigSpec{}, generatedHcc.Spec)
 		if err != nil {
 			return "", err
 		}
 	}
 
-	generatedSpec, found, err := unstructured.NestedMap(generatedDoc.Object, "spec")
-	if err != nil {
-		return "", fmt.Errorf("failed to parse generated HelmChartConfig spec: %w", err)
+	mergedHcc.Spec = mergedSpec
+	if strings.TrimSpace(mergedHcc.APIVersion) == "" {
+		mergedHcc.APIVersion = "helm.cattle.io/v1"
 	}
-	if !found || generatedSpec == nil {
-		generatedSpec = map[string]any{}
-	}
-
-	existingValues, hasExistingValues, err := unstructured.NestedString(mergedSpec, "valuesContent")
-	if err != nil {
-		return "", fmt.Errorf("failed to parse existing valuesContent: %w", err)
-	}
-	newValues, hasNewValues, err := unstructured.NestedString(generatedSpec, "valuesContent")
-	if err != nil {
-		return "", fmt.Errorf("failed to parse generated valuesContent: %w", err)
-	}
-	if hasExistingValues && hasNewValues {
-		combinedValues, err := mergeValuesContent(existingValues, newValues)
-		if err != nil {
-			return "", err
-		}
-		generatedSpec["valuesContent"] = combinedValues
+	if strings.TrimSpace(mergedHcc.Kind) == "" {
+		mergedHcc.Kind = "HelmChartConfig"
 	}
 
-	mergedSpec, err = mergeMapsWithOverride(mergedSpec, generatedSpec)
-	if err != nil {
-		return "", err
-	}
-
-	mergedDoc := generatedDoc.DeepCopy()
-	if err := unstructured.SetNestedMap(mergedDoc.Object, mergedSpec, "spec"); err != nil {
-		return "", fmt.Errorf("failed setting merged HelmChartConfig spec: %w", err)
-	}
-	if strings.TrimSpace(mergedDoc.GetAPIVersion()) == "" {
-		mergedDoc.SetAPIVersion("helm.cattle.io/v1")
-	}
-	if strings.TrimSpace(mergedDoc.GetKind()) == "" {
-		mergedDoc.SetKind("HelmChartConfig")
-	}
-
-	// Instead of marshaling the unstructured object (which can cause apiversion duplication),
-	// extract the merged spec and use the string template for output.
-	name := strings.TrimSpace(mergedDoc.GetName())
-	namespace := strings.TrimSpace(mergedDoc.GetNamespace())
-	valuesContent, _, _ := unstructured.NestedString(mergedSpec, "valuesContent")
-	return renderHelmChartConfig(name, namespace, valuesContent), nil
+	name := strings.TrimSpace(mergedHcc.Name)
+	namespace := strings.TrimSpace(mergedHcc.Namespace)
+	return renderHelmChartConfig(name, namespace, mergedHcc.Spec.ValuesContent), nil
 }
 
+// HelmChartConfigIdentityFromContent extracts the metadata.name and metadata.namespace from a HelmChartConfig YAML
 func HelmChartConfigIdentityFromContent(content string) (string, string, error) {
-	doc, err := parseSingleHelmChartConfig(content)
+	hcc, err := parseSingleHelmChartConfig(content)
 	if err != nil {
 		return "", "", err
 	}
 
-	name := strings.TrimSpace(doc.GetName())
-	namespace := strings.TrimSpace(doc.GetNamespace())
+	name := strings.TrimSpace(hcc.Name)
+	namespace := strings.TrimSpace(hcc.Namespace)
 	if name == "" || namespace == "" {
 		return "", "", fmt.Errorf("HelmChartConfig content missing metadata.name or metadata.namespace")
 	}
@@ -120,7 +106,8 @@ func HelmChartConfigIdentityFromContent(content string) (string, string, error) 
 	return name, namespace, nil
 }
 
-func parseSingleHelmChartConfig(content string) (*unstructured.Unstructured, error) {
+// parseSingleHelmChartConfig parses a YAML into a proper HelmChartConfig object
+func parseSingleHelmChartConfig(content string) (*helmcontrollerv1.HelmChartConfig, error) {
 	decoder := yaml.NewDecoder(strings.NewReader(content))
 	for {
 		var obj map[string]any
@@ -135,52 +122,39 @@ func parseSingleHelmChartConfig(content string) (*unstructured.Unstructured, err
 			continue
 		}
 
-		doc := &unstructured.Unstructured{Object: obj}
-		if strings.EqualFold(strings.TrimSpace(doc.GetKind()), "HelmChartConfig") {
-			return doc, nil
+		raw, err := yaml.Marshal(obj)
+		if err != nil {
+			return nil, err
+		}
+
+		var hcc helmcontrollerv1.HelmChartConfig
+		if err := syaml.Unmarshal(raw, &hcc); err != nil {
+			return nil, err
+		}
+
+		if strings.EqualFold(strings.TrimSpace(hcc.Kind), "HelmChartConfig") {
+			return &hcc, nil
 		}
 	}
 
-	return nil, fmt.Errorf("no HelmChartConfig document found")
+	return nil, fmt.Errorf("no HelmChartConfig found")
 }
 
-func findMatchingSpecInContent(content string, targetName string, targetNamespace string) (map[string]any, bool, error) {
-	decoder := yaml.NewDecoder(strings.NewReader(content))
+// mergeHelmChartConfigSpec takes two HelmChartConfigSpec objects and merges them
+func mergeHelmChartConfigSpec(existing helmcontrollerv1.HelmChartConfigSpec, generated helmcontrollerv1.HelmChartConfigSpec) (helmcontrollerv1.HelmChartConfigSpec, error) {
+	merged := existing
+	combinedValues, err := mergeValuesContent(existing.ValuesContent, generated.ValuesContent)
+	if err != nil {
+		return helmcontrollerv1.HelmChartConfigSpec{}, err
+	}
+	merged.ValuesContent = combinedValues
 
-	for {
-		var obj map[string]any
-		err := decoder.Decode(&obj)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, false, fmt.Errorf("failed parsing HelmChartConfig content: %w", err)
-		}
-		if len(obj) == 0 {
-			continue
-		}
-		doc := &unstructured.Unstructured{Object: obj}
-
-		if !strings.EqualFold(strings.TrimSpace(doc.GetKind()), "HelmChartConfig") {
-			continue
-		}
-
-		name := strings.TrimSpace(doc.GetName())
-		namespace := strings.TrimSpace(doc.GetNamespace())
-
-		if name == targetName && namespace == targetNamespace {
-			spec, found, err := unstructured.NestedMap(doc.Object, "spec")
-			if err != nil {
-				return nil, false, fmt.Errorf("failed parsing HelmChartConfig spec: %w", err)
-			}
-			if !found || spec == nil {
-				return map[string]any{}, true, nil
-			}
-			return spec, true, nil
-		}
+	generated.ValuesContent = ""
+	if err := mergo.Merge(&merged, generated, mergo.WithOverride); err != nil {
+		return helmcontrollerv1.HelmChartConfigSpec{}, fmt.Errorf("failed to merge HelmChartConfig spec: %w", err)
 	}
 
-	return nil, false, nil
+	return merged, nil
 }
 
 func mergeMapsWithOverride(base map[string]any, overlay map[string]any) (map[string]any, error) {
@@ -198,15 +172,91 @@ func mergeMapsWithOverride(base map[string]any, overlay map[string]any) (map[str
 	return result, nil
 }
 
+// ensureProperIndentation adds 4-space indentation to each line that doesn't already have it.
+// This preserves any existing indentation (for nested keys) and comments while ensuring the
+// top-level content is indented for block scalar display.
+func ensureProperIndentation(content string) string {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return ""
+	}
+	lines := strings.Split(trimmed, "\n")
+	for i, line := range lines {
+		if len(line) > 0 && !strings.HasPrefix(line, "    ") {
+			lines[i] = "    " + line
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// isProperlyIndented checks if all non-empty lines start with at least 4 spaces.
+// This indicates the content is already formatted for use as a YAML block scalar value.
+func isProperlyIndented(content string) bool {
+	if strings.TrimSpace(content) == "" {
+		return true // Empty is considered "properly indented"
+	}
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "    ") {
+			return false
+		}
+	}
+	return true
+}
+
+// normalizeValuesContent parses YAML content, re-marshals it, and adds proper indentation.
+func normalizeValuesContent(content string) (string, error) {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return "", nil
+	}
+
+	var values any
+	if err := yaml.Unmarshal([]byte(trimmed), &values); err != nil {
+		return "", fmt.Errorf("failed to parse valuesContent: %w", err)
+	}
+
+	b, err := yaml.Marshal(values)
+	if err != nil {
+		return "", err
+	}
+
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	for i, line := range lines {
+		lines[i] = "    " + line
+	}
+
+	return strings.Join(lines, "\n"), nil
+}
+
 func mergeValuesContent(existing string, incoming string) (string, error) {
 	existingTrimmed := strings.TrimSpace(existing)
 	incomingTrimmed := strings.TrimSpace(incoming)
 
 	if existingTrimmed == "" {
-		return incoming, nil
+		// If incoming already has patcher comments, preserve them by adding indentation if needed.
+		if strings.Contains(incoming, "# change made by rke2-patcher") {
+			return ensureProperIndentation(incoming), nil
+		}
+		// If properly indented, preserve as-is. Otherwise normalize.
+		if isProperlyIndented(incoming) {
+			return incoming, nil
+		}
+		return normalizeValuesContent(incoming)
 	}
 	if incomingTrimmed == "" {
-		return existing, nil
+		// Same for existing: preserve patcher comments with proper indentation.
+		if strings.Contains(existing, "# change made by rke2-patcher") {
+			return ensureProperIndentation(existing), nil
+		}
+		// If properly indented, preserve as-is. Otherwise normalize.
+		if isProperlyIndented(existing) {
+			return existing, nil
+		}
+		return normalizeValuesContent(existing)
 	}
 
 	var existingValues any
@@ -244,23 +294,12 @@ func mergeValuesContent(existing string, incoming string) (string, error) {
 }
 
 func SubtractPatcherValuesContent(existingFileContent, generatedValuesContent string) (string, error) {
-	existingDoc, err := parseSingleHelmChartConfig(existingFileContent)
+	existingHcc, err := parseSingleHelmChartConfig(existingFileContent)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse existing HelmChartConfig: %w", err)
 	}
-	existingSpec, found, err := unstructured.NestedMap(existingDoc.Object, "spec")
-	if err != nil {
-		return "", fmt.Errorf("failed to parse existing HelmChartConfig spec: %w", err)
-	}
-	if !found || existingSpec == nil {
-		existingSpec = map[string]any{}
-	}
-
-	existingValuesStr, hasExisting, err := unstructured.NestedString(existingSpec, "valuesContent")
-	if err != nil {
-		return "", fmt.Errorf("failed to parse existing valuesContent: %w", err)
-	}
-	if !hasExisting || strings.TrimSpace(existingValuesStr) == "" {
+	existingValuesStr := strings.TrimSpace(existingHcc.Spec.ValuesContent)
+	if existingValuesStr == "" {
 		return existingFileContent, nil
 	}
 
@@ -281,12 +320,9 @@ func SubtractPatcherValuesContent(existingFileContent, generatedValuesContent st
 
 	resultValues := deepSubtractMap(existingValues, generatedValues)
 
-	updatedSpec := map[string]any{}
-	if existingSpec != nil {
-		updatedSpec = runtime.DeepCopyJSON(existingSpec)
-	}
+	updatedSpec := existingHcc.Spec
 	if len(resultValues) == 0 {
-		delete(updatedSpec, "valuesContent")
+		updatedSpec.ValuesContent = ""
 	} else {
 		b, err := yaml.Marshal(resultValues)
 		if err != nil {
@@ -297,14 +333,12 @@ func SubtractPatcherValuesContent(existingFileContent, generatedValuesContent st
 		for i, line := range lines {
 			lines[i] = "    " + line
 		}
-		updatedSpec["valuesContent"] = strings.Join(lines, "\n")
+		updatedSpec.ValuesContent = strings.Join(lines, "\n")
 	}
 
-	// Instead of marshaling the unstructured object (which can cause apiversion duplication),
-	// extract the updated spec and use the string template for output.
-	name := strings.TrimSpace(existingDoc.GetName())
-	namespace := strings.TrimSpace(existingDoc.GetNamespace())
-	valuesContent, _, _ := unstructured.NestedString(updatedSpec, "valuesContent")
+	name := strings.TrimSpace(existingHcc.Name)
+	namespace := strings.TrimSpace(existingHcc.Namespace)
+	valuesContent := updatedSpec.ValuesContent
 	return renderHelmChartConfig(name, namespace, valuesContent), nil
 }
 
