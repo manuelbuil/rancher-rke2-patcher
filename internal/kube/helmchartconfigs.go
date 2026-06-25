@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	helmcontrollerv1 "github.com/k3s-io/helm-controller/pkg/apis/helm.cattle.io/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -14,24 +14,13 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	syaml "sigs.k8s.io/yaml"
 )
 
 type HelmChartConfigObject struct {
 	Name      string
 	Namespace string
 	Content   string
-}
-
-type helmChartConfigItem struct {
-	APIVersion string         `json:"apiVersion" yaml:"apiVersion"`
-	Kind       string         `json:"kind" yaml:"kind"`
-	Metadata   helmObjectMeta `json:"metadata" yaml:"metadata"`
-	Spec       map[string]any `json:"spec" yaml:"spec"`
-}
-
-type helmObjectMeta struct {
-	Name      string `json:"name" yaml:"name"`
-	Namespace string `json:"namespace" yaml:"namespace"`
 }
 
 // kubeDynamicClient returns a dynamic.Interface using in-cluster config if available, otherwise falls back to kubeconfig.
@@ -65,6 +54,28 @@ func kubeDynamicClient() (dynamic.Interface, error) {
 // GetHelmChartConfigByIdentity is a variable for testability, delegates to getHelmChartConfigByIdentityImpl.
 var GetHelmChartConfigByIdentity = getHelmChartConfigByIdentityImpl
 
+// cleanObjectMeta removes server-managed fields from ObjectMeta while preserving user-facing metadata.
+// This prevents bloated output and unintended diffs when merging/applying.
+// Removed: resourceVersion, uid, generation, creationTimestamp, managedFields, selfLink.
+// Preserved: name, namespace, labels, annotations, ownerReferences, finalizers.
+func cleanObjectMeta(om *metav1.ObjectMeta) {
+	om.ResourceVersion = ""
+	om.UID = ""
+	om.Generation = 0
+	om.CreationTimestamp = metav1.Time{}
+	om.DeletionTimestamp = nil
+	om.DeletionGracePeriodSeconds = nil
+	om.ManagedFields = nil
+	om.SelfLink = ""
+}
+
+// dropStatusField removes the status field from an unstructured object.
+// The status field is server-managed and can cause noisy diffs or apply rejections
+// on CRDs with status subresources. We only care about metadata and spec.
+func dropStatusField(obj map[string]interface{}) {
+	delete(obj, "status")
+}
+
 // getHelmChartConfigByIdentityImpl retrieves a HelmChartConfigObject by its name and namespace.
 func getHelmChartConfigByIdentityImpl(name string, namespace string) (*HelmChartConfigObject, error) {
 	trimmedName := strings.TrimSpace(name)
@@ -90,30 +101,38 @@ func getHelmChartConfigByIdentityImpl(name string, namespace string) (*HelmChart
 		return nil, fmt.Errorf("failed to get helmchartconfig %s/%s: %w", trimmedNamespace, trimmedName, err)
 	}
 
-	spec, _, err := unstructured.NestedMap(item.Object, "spec")
+	// Drop the status field which is server-managed and can cause noisy diffs or apply rejections.
+	// We only care about metadata and spec for merge/apply operations.
+	dropStatusField(item.Object)
+
+	// Marshal the unstructured object to JSON/YAML and unmarshal into the typed struct.
+	// This preserves all ObjectMeta fields (labels, annotations, etc.) via the typed struct's
+	// metav1.ObjectMeta, unlike a custom reduced struct that only captures name/namespace.
+	rawBytes, err := syaml.Marshal(item.Object)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to marshal HelmChartConfig object: %w", err)
 	}
 
-	manifest := helmChartConfigItem{
-		APIVersion: item.GetAPIVersion(),
-		Kind:       item.GetKind(),
-		Metadata: helmObjectMeta{
-			Name:      item.GetName(),
-			Namespace: item.GetNamespace(),
-		},
-		Spec: spec,
-	}
-	if strings.TrimSpace(manifest.APIVersion) == "" {
-		manifest.APIVersion = "helm.cattle.io/v1"
-	}
-	if strings.TrimSpace(manifest.Kind) == "" {
-		manifest.Kind = "HelmChartConfig"
+	var hcc helmcontrollerv1.HelmChartConfig
+	if err := syaml.Unmarshal(rawBytes, &hcc); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal HelmChartConfig: %w", err)
 	}
 
-	contentBytes, err := yaml.Marshal(manifest)
+	// Strip server-managed ObjectMeta fields while preserving user-facing metadata.
+	// Server fields like resourceVersion, uid, generation, creationTimestamp, managedFields
+	// should not be included in the merge output.
+	cleanObjectMeta(&hcc.ObjectMeta)
+
+	if strings.TrimSpace(hcc.APIVersion) == "" {
+		hcc.APIVersion = "helm.cattle.io/v1"
+	}
+	if strings.TrimSpace(hcc.Kind) == "" {
+		hcc.Kind = "HelmChartConfig"
+	}
+
+	contentBytes, err := syaml.Marshal(hcc)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to serialize HelmChartConfig: %w", err)
 	}
 
 	return &HelmChartConfigObject{
@@ -128,7 +147,7 @@ var ApplyHelmChartConfig = applyHelmChartConfigImpl
 
 func applyHelmChartConfigImpl(yamlContent string) error {
 	un := &unstructured.Unstructured{}
-	if err := yaml.Unmarshal([]byte(yamlContent), &un.Object); err != nil {
+	if err := syaml.Unmarshal([]byte(yamlContent), &un.Object); err != nil {
 		return fmt.Errorf("failed to unmarshal HelmChartConfig YAML: %w", err)
 	}
 
