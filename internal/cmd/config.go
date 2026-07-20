@@ -13,6 +13,8 @@ import (
 
 const (
 	registryEnvName         = "RKE2_PATCHER_REGISTRY"
+	registryUserEnvName     = "RKE2_PATCHER_REGISTRY_USERNAME"
+	registryPassEnvName     = "RKE2_PATCHER_REGISTRY_PASSWORD"
 	defaultRegistryHost     = "registry.rancher.com"
 	scannerModeEnvName      = "RKE2_PATCHER_SCANNER_MODE"
 	defaultCVEMode          = "cluster"
@@ -76,6 +78,8 @@ func collectConfigEntries() ([]configEntry, error) {
 
 	entries := []configEntry{
 		{Key: "registry", Effective: registryValue, Default: "https://" + defaultRegistryHost, Source: registrySource, EnvVar: registryEnvName},
+		{Key: "registry_username", Effective: envPresence(registryUserEnvName), Default: "unset", Source: envSourceOrDefault(registryUserEnvName), EnvVar: registryUserEnvName},
+		{Key: "registry_password", Effective: envPresence(registryPassEnvName), Default: "unset", Source: envSourceOrDefault(registryPassEnvName), EnvVar: registryPassEnvName},
 		{Key: "scanner_mode", Effective: scannerMode, Default: defaultCVEMode, Source: scannerModeSource, EnvVar: scannerModeEnvName},
 		{Key: "cve_namespace", Effective: cveNamespace, Default: defaultCVENamespaceName, Source: cveNamespaceSource, EnvVar: cveNamespaceEnvName},
 		{Key: "cve_scanner_image", Effective: cveScannerImage, Default: defaultCVEScannerImage, Source: cveScannerImageSource, EnvVar: cveScannerImageEnvName},
@@ -147,4 +151,20 @@ func envOr(name string, defaultValue string) (string, string) {
 	}
 
 	return value, name
+}
+
+func envPresence(name string) string {
+	if strings.TrimSpace(os.Getenv(name)) == "" {
+		return "unset"
+	}
+
+	return "set"
+}
+
+func envSourceOrDefault(name string) string {
+	if strings.TrimSpace(os.Getenv(name)) == "" {
+		return "default"
+	}
+
+	return name
 }

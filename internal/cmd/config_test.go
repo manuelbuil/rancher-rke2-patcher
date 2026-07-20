@@ -6,6 +6,8 @@ import (
 
 func TestCollectConfigEntries_Defaults(t *testing.T) {
 	t.Setenv(registryEnvName, "")
+	t.Setenv(registryUserEnvName, "")
+	t.Setenv(registryPassEnvName, "")
 	t.Setenv(scannerModeEnvName, "")
 	t.Setenv(cveNamespaceEnvName, "")
 	t.Setenv(cveScannerImageEnvName, "")
@@ -25,6 +27,22 @@ func TestCollectConfigEntries_Defaults(t *testing.T) {
 	}
 	if registry.EnvVar != registryEnvName {
 		t.Fatalf("unexpected default registry env var: %q", registry.EnvVar)
+	}
+
+	registryUser := configEntryByKey(entries, "registry_username")
+	if registryUser.Effective != "unset" {
+		t.Fatalf("unexpected registry username effective value: %q", registryUser.Effective)
+	}
+	if registryUser.Source != "default" {
+		t.Fatalf("unexpected registry username source: %q", registryUser.Source)
+	}
+
+	registryPass := configEntryByKey(entries, "registry_password")
+	if registryPass.Effective != "unset" {
+		t.Fatalf("unexpected registry password effective value: %q", registryPass.Effective)
+	}
+	if registryPass.Source != "default" {
+		t.Fatalf("unexpected registry password source: %q", registryPass.Source)
 	}
 
 	scannerMode := configEntryByKey(entries, "scanner_mode")
@@ -63,6 +81,8 @@ func TestCollectConfigEntries_Defaults(t *testing.T) {
 
 func TestCollectConfigEntries_Overrides(t *testing.T) {
 	t.Setenv(registryEnvName, "mirror.local:5000")
+	t.Setenv(registryUserEnvName, "user")
+	t.Setenv(registryPassEnvName, "pass")
 	t.Setenv(scannerModeEnvName, "local")
 	t.Setenv(cveNamespaceEnvName, "sec-scan")
 	t.Setenv(cveScannerImageEnvName, "scanner:1.2.3")
@@ -82,6 +102,22 @@ func TestCollectConfigEntries_Overrides(t *testing.T) {
 	}
 	if registry.EnvVar != registryEnvName {
 		t.Fatalf("unexpected registry env var: %q", registry.EnvVar)
+	}
+
+	registryUser := configEntryByKey(entries, "registry_username")
+	if registryUser.Effective != "set" {
+		t.Fatalf("unexpected registry username effective value: %q", registryUser.Effective)
+	}
+	if registryUser.Source != registryUserEnvName {
+		t.Fatalf("unexpected registry username source: %q", registryUser.Source)
+	}
+
+	registryPass := configEntryByKey(entries, "registry_password")
+	if registryPass.Effective != "set" {
+		t.Fatalf("unexpected registry password effective value: %q", registryPass.Effective)
+	}
+	if registryPass.Source != registryPassEnvName {
+		t.Fatalf("unexpected registry password source: %q", registryPass.Source)
 	}
 
 	scannerMode := configEntryByKey(entries, "scanner_mode")

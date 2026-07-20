@@ -224,6 +224,37 @@ General tag-registry override:
   - Behavior: tag listing starts unauthenticated, then follows Bearer challenge flow only if the registry returns `401` with `WWW-Authenticate: Bearer ...`.
   - To use Docker Hub instead: `RKE2_PATCHER_REGISTRY=registry-1.docker.io` (all Rancher component images are mirrored there publicly).
 
+- `RKE2_PATCHER_REGISTRY_USERNAME`
+  - Optional username for authenticated registry access.
+  - Must be set together with `RKE2_PATCHER_REGISTRY_PASSWORD`.
+
+- `RKE2_PATCHER_REGISTRY_PASSWORD`
+  - Optional password for authenticated registry access.
+  - Must be set together with `RKE2_PATCHER_REGISTRY_USERNAME`.
+
+Registry authentication methods supported by `rke2-patcher`:
+
+- Anonymous pull
+  - The tags endpoint is accessible without credentials.
+  - `rke2-patcher` works with no registry auth env vars set.
+
+- Basic auth directly on registry API
+  - The tags endpoint (`/v2/.../tags/list`) expects HTTP Basic credentials.
+  - Set both `RKE2_PATCHER_REGISTRY_USERNAME` and `RKE2_PATCHER_REGISTRY_PASSWORD`.
+
+- Bearer token flow (anonymous token)
+  - The registry returns `401` with `WWW-Authenticate: Bearer ...`, and the token endpoint issues a usable token without credentials.
+  - `rke2-patcher` follows the Bearer challenge flow automatically.
+
+- Bearer token flow with credentialed token endpoint
+  - The registry returns `WWW-Authenticate: Bearer ...`, but the token endpoint requires credentials.
+  - Set both `RKE2_PATCHER_REGISTRY_USERNAME` and `RKE2_PATCHER_REGISTRY_PASSWORD`; `rke2-patcher` will send them when requesting the token.
+
+Notes:
+
+- `WWW-Authenticate` is the key signal for challenge-based auth (for example `Basic` vs `Bearer`).
+- Public repositories can often use anonymous access, while private repositories typically require credentials.
+
 The `image-patch` command supports these options and related inputs:
 
 - `--yes` / `-y`

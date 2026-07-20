@@ -14,8 +14,15 @@ import (
 const (
 	defaultRegistryHost = "registry.rancher.com"
 	registryEnv         = "RKE2_PATCHER_REGISTRY"
+	registryUserEnv     = "RKE2_PATCHER_REGISTRY_USERNAME"
+	registryPassEnv     = "RKE2_PATCHER_REGISTRY_PASSWORD"
 	defaultPage         = 100
 )
+
+type registryCredentials struct {
+	Username string
+	Password string
+}
 
 type Tag struct {
 	Name        string
@@ -43,6 +50,11 @@ func ListTags(repository string, limit int) ([]Tag, error) {
 		return nil, fmt.Errorf("limit must be greater than zero")
 	}
 
+	creds, err := resolveRegistryCredentials()
+	if err != nil {
+		return nil, err
+	}
+
 	baseURL, repositoryPath, err := resolveImageRepo(repository)
 	if err != nil {
 		return nil, err
@@ -60,7 +72,7 @@ func ListTags(repository string, limit int) ([]Tag, error) {
 	bearerToken := ""
 
 	for next != "" && len(tags) < limit {
-		page, nextURL, resolvedToken, pageErr := getTagsPage(client, next, baseURL, repositoryPath, bearerToken)
+		page, nextURL, resolvedToken, pageErr := getTagsPage(client, next, baseURL, repositoryPath, bearerToken, creds)
 		if pageErr != nil {
 			return nil, pageErr
 		}
@@ -114,10 +126,10 @@ func LatestTag(repository string) (Tag, error) {
 }
 
 // getTagsPage retrieves a single page of tags from the registry API, handling bearer token authentication if necessary (needed for suse registry)
-func getTagsPage(client *http.Client, requestURL string, baseURL string, repository string, bearerToken string) (tagsPage, string, string, error) {
+func getTagsPage(client *http.Client, requestURL string, baseURL string, repository string, bearerToken string, creds registryCredentials) (tagsPage, string, string, error) {
 
 	// First attempt with whatever bearer token we have (empty)
-	page, nextURL, err := getTagsPageWithBearer(client, requestURL, baseURL, bearerToken)
+	page, nextURL, err := getTagsPageWithBearer(client, requestURL, baseURL, bearerToken, creds)
 	if err == nil {
 		return page, nextURL, bearerToken, nil
 	}
@@ -141,13 +153,13 @@ func getTagsPage(client *http.Client, requestURL string, baseURL string, reposit
 	}
 
 	// Now we request a temporary bearer token with the information from the challenge
-	token, tokenErr := fetchBearerToken(client, challenge)
+	token, tokenErr := fetchBearerToken(client, challenge, creds)
 	if tokenErr != nil {
 		return tagsPage{}, "", "", tokenErr
 	}
 
 	// We try again with the new token
-	page, nextURL, err = getTagsPageWithBearer(client, requestURL, baseURL, token)
+	page, nextURL, err = getTagsPageWithBearer(client, requestURL, baseURL, token, creds)
 	if err != nil {
 		return tagsPage{}, "", "", err
 	}
@@ -156,7 +168,7 @@ func getTagsPage(client *http.Client, requestURL string, baseURL string, reposit
 }
 
 // getTagsPageWithBearer performs the actual HTTP request to get a page of tags, using the provided bearer token for authentication
-func getTagsPageWithBearer(client *http.Client, requestURL string, baseURL string, bearerToken string) (tagsPage, string, error) {
+func getTagsPageWithBearer(client *http.Client, requestURL string, baseURL string, bearerToken string, creds registryCredentials) (tagsPage, string, error) {
 	request, err := http.NewRequest(http.MethodGet, requestURL, nil)
 	if err != nil {
 		return tagsPage{}, "", err
@@ -165,6 +177,8 @@ func getTagsPageWithBearer(client *http.Client, requestURL string, baseURL strin
 	bearerToken = strings.TrimSpace(bearerToken)
 	if bearerToken != "" {
 		request.Header.Set("Authorization", "Bearer "+bearerToken)
+	} else if creds.Username != "" {
+		request.SetBasicAuth(creds.Username, creds.Password)
 	}
 
 	response, err := client.Do(request)
@@ -197,7 +211,7 @@ func getTagsPageWithBearer(client *http.Client, requestURL string, baseURL strin
 
 // fetchBearerToken requests a bearer token from the registry's auth server using the information provided
 // in the WWW-Authenticate challenge
-func fetchBearerToken(client *http.Client, challenge bearerChallenge) (string, error) {
+func fetchBearerToken(client *http.Client, challenge bearerChallenge, creds registryCredentials) (string, error) {
 	authURL, err := url.Parse(challenge.Realm)
 	if err != nil {
 		return "", fmt.Errorf("invalid registry authorization realm %q: %w", challenge.Realm, err)
@@ -212,7 +226,15 @@ func fetchBearerToken(client *http.Client, challenge bearerChallenge) (string, e
 	}
 	authURL.RawQuery = query.Encode()
 
-	response, err := client.Get(authURL.String())
+	request, err := http.NewRequest(http.MethodGet, authURL.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	if creds.Username != "" {
+		request.SetBasicAuth(creds.Username, creds.Password)
+	}
+
+	response, err := client.Do(request)
 	if err != nil {
 		return "", err
 	}
@@ -242,6 +264,17 @@ func fetchBearerToken(client *http.Client, challenge bearerChallenge) (string, e
 	}
 
 	return token, nil
+}
+
+func resolveRegistryCredentials() (registryCredentials, error) {
+	username := strings.TrimSpace(os.Getenv(registryUserEnv))
+	password := strings.TrimSpace(os.Getenv(registryPassEnv))
+
+	if (username == "") != (password == "") {
+		return registryCredentials{}, fmt.Errorf("%s and %s must both be set or both be unset", registryUserEnv, registryPassEnv)
+	}
+
+	return registryCredentials{Username: username, Password: password}, nil
 }
 
 // parseBearerChallenge parses the WWW-Authenticate header value from a 401 Unauthorized response to extract

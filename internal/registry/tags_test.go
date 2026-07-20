@@ -1,6 +1,12 @@
 package registry
 
-import "testing"
+import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
 
 func TestParseBearerChallenge(t *testing.T) {
 	t.Run("valid challenge", func(t *testing.T) {
@@ -133,4 +139,169 @@ func TestResolveListTagsInputs(t *testing.T) {
 		}
 		t.Fatalf("expected error, got nil")
 	})
+}
+
+func TestResolveRegistryCredentials(t *testing.T) {
+	t.Run("both unset", func(t *testing.T) {
+		t.Setenv(registryUserEnv, "")
+		t.Setenv(registryPassEnv, "")
+
+		creds, err := resolveRegistryCredentials()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if creds.Username != "" || creds.Password != "" {
+			t.Fatalf("expected empty credentials, got %#v", creds)
+		}
+	})
+
+	t.Run("both set", func(t *testing.T) {
+		t.Setenv(registryUserEnv, "user")
+		t.Setenv(registryPassEnv, "pass")
+
+		creds, err := resolveRegistryCredentials()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if creds.Username != "user" || creds.Password != "pass" {
+			t.Fatalf("unexpected credentials: %#v", creds)
+		}
+	})
+
+	t.Run("only username set", func(t *testing.T) {
+		t.Setenv(registryUserEnv, "user")
+		t.Setenv(registryPassEnv, "")
+
+		_, err := resolveRegistryCredentials()
+		if err == nil {
+			t.Fatalf("expected error, got nil")
+		}
+	})
+
+	t.Run("only password set", func(t *testing.T) {
+		t.Setenv(registryUserEnv, "")
+		t.Setenv(registryPassEnv, "pass")
+
+		_, err := resolveRegistryCredentials()
+		if err == nil {
+			t.Fatalf("expected error, got nil")
+		}
+	})
+}
+
+func TestListTags_WithBasicAuth(t *testing.T) {
+	const expectedUser = "alice"
+	const expectedPass = "s3cret"
+	repository := "rancher/hardened-traefik"
+	path := "/v2/" + repository + "/tags/list"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != path {
+			http.NotFound(w, r)
+			return
+		}
+
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != expectedUser || pass != expectedPass {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("unauthorized"))
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"tags":["v1.0.0-build20260101"]}`)
+	}))
+	defer server.Close()
+
+	t.Setenv(registryEnv, server.URL)
+	t.Setenv(registryUserEnv, expectedUser)
+	t.Setenv(registryPassEnv, expectedPass)
+
+	tags, err := ListTags(repository, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tags) != 1 || tags[0].Name != "v1.0.0-build20260101" {
+		t.Fatalf("unexpected tags: %#v", tags)
+	}
+}
+
+func TestListTags_BasicAuthFailure(t *testing.T) {
+	repository := "rancher/hardened-traefik"
+	path := "/v2/" + repository + "/tags/list"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != path {
+			http.NotFound(w, r)
+			return
+		}
+
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("unauthorized"))
+	}))
+	defer server.Close()
+
+	t.Setenv(registryEnv, server.URL)
+	t.Setenv(registryUserEnv, "wrong")
+	t.Setenv(registryPassEnv, "wrong")
+
+	_, err := ListTags(repository, 1)
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "unauthorized") {
+		t.Fatalf("expected unauthorized error, got %v", err)
+	}
+}
+
+func TestListTags_BearerTokenWithBasicAuthOnTokenEndpoint(t *testing.T) {
+	const expectedUser = "alice"
+	const expectedPass = "s3cret"
+	const tokenValue = "token-123"
+
+	repository := "rancher/hardened-traefik"
+	tagsPath := "/v2/" + repository + "/tags/list"
+
+	var serverURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case tagsPath:
+			authHeader := r.Header.Get("Authorization")
+			if authHeader != "Bearer "+tokenValue {
+				w.Header().Set("Www-Authenticate", fmt.Sprintf(`Bearer realm="%s/token",service="registry.test",scope="repository:%s:pull"`, serverURL, repository))
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte("need token"))
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"tags":["v1.0.0-build20260101"]}`)
+		case "/token":
+			user, pass, ok := r.BasicAuth()
+			if !ok || user != expectedUser || pass != expectedPass {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte("bad token credentials"))
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"token":"%s"}`, tokenValue)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	t.Setenv(registryEnv, server.URL)
+	t.Setenv(registryUserEnv, expectedUser)
+	t.Setenv(registryPassEnv, expectedPass)
+
+	tags, err := ListTags(repository, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tags) != 1 || tags[0].Name != "v1.0.0-build20260101" {
+		t.Fatalf("unexpected tags: %#v", tags)
+	}
 }
