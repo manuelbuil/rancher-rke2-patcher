@@ -3,6 +3,7 @@ package cve
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -292,7 +293,7 @@ func ensureLocalVEXFile() (string, error) {
 
 	var lastErr error
 	for attempt := 1; attempt <= vexDownloadAttempts; attempt++ {
-		err = downloadVEXFileOnce(vexDirectory, vexFilePath)
+		err = downloadVEXFileOnce(vex.ReportURL, vexDirectory, vexFilePath)
 		if err == nil {
 			log.Printf("downloaded VEX file to %q", vexFilePath)
 			return vexFilePath, nil
@@ -312,9 +313,9 @@ func ensureLocalVEXFile() (string, error) {
 	return "", fmt.Errorf("failed to download vex report from %q after %d attempts and no local VEX file is available; local scan requires the VEX file: %w", vex.ReportURL, vexDownloadAttempts, lastErr)
 }
 
-// downloadVEXFileOnce downloads the VEX file from the hardcoded URL and saves it to the given path
-func downloadVEXFileOnce(vexDirectory string, vexFilePath string) error {
-	response, err := http.Get(vex.ReportURL)
+// downloadVEXFileOnce downloads and decompresses the VEX file before replacing the cached JSON.
+func downloadVEXFileOnce(reportURL string, vexDirectory string, vexFilePath string) error {
+	response, err := http.Get(reportURL)
 	if err != nil {
 		return fmt.Errorf("download request failed: %w", err)
 	}
@@ -325,6 +326,12 @@ func downloadVEXFileOnce(vexDirectory string, vexFilePath string) error {
 		return fmt.Errorf("unexpected status %d: %s", response.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
+	gzipReader, err := gzip.NewReader(response.Body)
+	if err != nil {
+		return fmt.Errorf("failed to open compressed vex report: %w", err)
+	}
+	defer gzipReader.Close()
+
 	temporaryFile, err := os.CreateTemp(vexDirectory, "rancher.openvex-*.tmp")
 	if err != nil {
 		return fmt.Errorf("failed to create temporary vex file: %w", err)
@@ -334,9 +341,9 @@ func downloadVEXFileOnce(vexDirectory string, vexFilePath string) error {
 		_ = os.Remove(temporaryFilePath)
 	}()
 
-	if _, copyErr := io.Copy(temporaryFile, response.Body); copyErr != nil {
+	if _, copyErr := io.Copy(temporaryFile, gzipReader); copyErr != nil {
 		_ = temporaryFile.Close()
-		return fmt.Errorf("failed to write vex report content to %q: %w", temporaryFilePath, copyErr)
+		return fmt.Errorf("failed to decompress vex report into %q: %w", temporaryFilePath, copyErr)
 	}
 
 	if closeErr := temporaryFile.Close(); closeErr != nil {
