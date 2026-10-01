@@ -262,9 +262,12 @@ func stripRegistryPrefix(ref string) string {
 // its local path.  Call StageVEXFile afterwards to copy it into the node.
 func (config *TestConfig) DownloadVEXFile() (string, error) {
 	destPath := filepath.Join(config.TestDir, "rancher.openvex.json")
-	curlCmd := fmt.Sprintf("curl -fsSL -o %q %s", destPath, vex.ReportURL)
-	if out, err := RunCommand(curlCmd); err != nil {
-		return "", fmt.Errorf("failed to download VEX file: %s: %w", out, err)
+	archivePath := destPath + ".gz"
+	tempPath := destPath + ".tmp"
+	downloadCmd := fmt.Sprintf("curl -fsSL -o %q %q && gzip -dc %q > %q && mv %q %q; rc=$?; rm -f %q %q; exit \"$rc\"",
+		archivePath, vex.ReportURL, archivePath, tempPath, tempPath, destPath, archivePath, tempPath)
+	if out, err := RunCommand(downloadCmd); err != nil {
+		return "", fmt.Errorf("failed to download or decompress VEX file: %s: %w", out, err)
 	}
 	return destPath, nil
 }

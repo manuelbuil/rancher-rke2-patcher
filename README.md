@@ -100,10 +100,11 @@ rke2-patcher image-cve rke2-traefik --json
 - In local mode (`RKE2_PATCHER_SCANNER_MODE=local`), it tries local scanners in order: `trivy` first, then `grype` as fallback.
 - `grype` support is experimental.
 - Use `--json` to emit the component, scanned image, scanner name, and CVE count and findings as JSON.
+- Both in-cluster and local scans download the compressed Rancher VEX report and decompress it before passing the JSON file to the scanner.
 - In local mode, both `trivy` and `grype` use a shared local VEX file at `$HOME/rke2-patcher-cache/vex/rancher.openvex.json`:
   - if the file exists and is newer than 24 hours, it is reused (no download)
-  - if the file exists but is older than 24 hours, a refresh is attempted (up to 3 tries); on failure, the stale local file is still used
-  - if the file does not exist, download is attempted (up to 3 tries); if all fail, local scan errors
+  - if the file exists but is older than 24 hours, a refresh is attempted (up to 5 tries); on failure, the stale local file is still used
+  - if the file does not exist, download and decompression are attempted (up to 5 tries); if all fail, local scan errors
 
 ### 2) List available images (tags)
 
