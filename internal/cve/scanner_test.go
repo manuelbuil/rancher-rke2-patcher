@@ -1,10 +1,73 @@
 package cve
 
 import (
+	"bytes"
+	"compress/gzip"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
+
+func TestDownloadVEXFileOnce(t *testing.T) {
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := writer.Write([]byte(`{"@context":"https://openvex.dev/ns/v0.2.0"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		content []byte
+		wantErr bool
+	}{
+		{name: "valid archive", content: compressed.Bytes()},
+		{name: "invalid archive", content: []byte("not gzip"), wantErr: true},
+		{name: "truncated archive", content: compressed.Bytes()[:compressed.Len()-4], wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write(tt.content)
+			}))
+			defer server.Close()
+
+			dir := t.TempDir()
+			path := filepath.Join(dir, vexFileName)
+			if err := os.WriteFile(path, []byte("cached report"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err := downloadVEXFileOnce(server.URL, dir, path)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("downloadVEXFileOnce() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []byte(`{"@context":"https://openvex.dev/ns/v0.2.0"}`)
+			if tt.wantErr {
+				want = []byte("cached report")
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("cached report = %q, want %q", got, want)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 {
+				t.Fatalf("unexpected temporary files after download: %v", entries)
+			}
+		})
+	}
+}
 
 func TestListForImages_LocalModeFromEnvUsesLocalScanner(t *testing.T) {
 	t.Setenv(scannerModeEnv, "local")
