@@ -40,7 +40,7 @@ func runCVE(component components.Component, jsonOutput bool) error {
 
 	fmt.Printf("CVEs (%d):\n", len(resultCVEs.CVEs))
 	for _, vulnerability := range resultCVEs.CVEs {
-		fmt.Printf("- %s\n", vulnerability.ID)
+		fmt.Printf("- %s (%s)\n", vulnerability.ID, vulnerability.Severity)
 	}
 
 	return nil
