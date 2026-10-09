@@ -1,3 +1,4 @@
 /rke2-patcher
 /tests/docker/airgap/bundles/
 .vscode/
+*.test

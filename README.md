@@ -24,7 +24,7 @@ rke2-patcher --config
 rke2-patcher image-cve <component> [--json]
 rke2-patcher image-list <component> [--with-cves] [--verbose] [--json]
 rke2-patcher image-patch <component> [--tag TAG] [--dry-run] [--yes|-y]
-rke2-patcher image-reconcile <component>
+rke2-patcher image-reconcile <component> [--yes|-y]
 ```
 
 - `--version` always prints the CLI version and also tries to print the connected cluster version (`gitVersion`) from Kubernetes API `/version`.
@@ -64,11 +64,7 @@ make test-docker-airgap IMAGE_BUNDLES_DIR=/path/to/bundles
 
 The repository includes Docker end-to-end scenario tests, modeled after the RKE2 Docker test style:
 
-- Test locations:
-  - `tests/docker/default_components/default_components_test.go`
-  - `tests/docker/flannel_traefik/flannel_traefik_test.go`
-  - `tests/docker/patch_components/patch_components_test.go`
-  - `tests/docker/reconcile/reconcile_test.go`
+- Test locations: one scenario per directory under `tests/docker/` (for example `patch_components`, `reconcile`, `reconcile_upgrade`, `airgap`, `multi_patcher_reconcile`, `patch_reconcile_component_ha`)
 - Shared test harness: `tests/docker/testutils.go`
 - CI workflow: `.github/workflows/docker-tests.yaml`
 
@@ -186,6 +182,7 @@ rke2-patcher image-reconcile rke2-traefik
 ```
 
 - `image-reconcile` requires a single `<component>` argument.
+- With `--yes` (or `-y`), the revert confirmation is auto-approved for non-interactive runs.
 - It only touches the `HelmChartConfig` object previously managed for that component.
 - It first acts on state entries recorded for a different RKE2 version than the one currently running.
 - If no stale entries are found but a same-version patch exists for the component, it asks whether to revert that patch.
